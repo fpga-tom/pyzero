@@ -1572,16 +1572,16 @@ struct SharedStorage {
 
 int softmax_sample(std::vector<float> visit_counts, float temperature) {
 //    std::cout << "t " << temperature << std::endl;
-    std::vector<float> m;
-    float mx = *std::max_element(visit_counts.begin(), visit_counts.end());
-    for(int i = 0;i < visit_counts.size(); i++) {
-        m.emplace_back(std::exp(visit_counts[i] - mx));
-    }
-    float counts_sum = std::accumulate(m.begin(), m.end(), (float)0.,
+//    std::vector<float> m;
+//    float mx = *std::max_element(visit_counts.begin(), visit_counts.end());
+//    for(int i = 0;i < visit_counts.size(); i++) {
+//        m.emplace_back(std::exp(visit_counts[i] - mx));
+//    }
+    float counts_sum = std::accumulate(visit_counts.begin(), visit_counts.end(), (float)0.,
             [temperature](float &a, float &b){return a + b;});
     std::vector<float> d;
     for(int i = 0;i < visit_counts.size(); i++) {
-        float s = m[i] / counts_sum;
+        float s = visit_counts[i] / counts_sum;
 //        std::cout << s << " / " << counts_sum << " / " << visit_counts[i] << " / " << m[i] << " / " << mx << std::endl;
         d.emplace_back(s);
     }
