@@ -11,11 +11,15 @@
 #include "random.h"
 
 torch::Device get_ctx() {
-    return torch::Device("cpu");
+    return torch::Device("cuda:0");
 }
 
 torch::Device get_train_ctx() {
     return torch::Device("cuda:0");
+}
+
+torch::Device get_cpu_ctx() {
+    return torch::Device("cpu");
 }
 
 const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
@@ -1189,16 +1193,16 @@ struct Network {
         torch::Tensor hidden_state_tensor = representation->forward(t);
         std::pair<torch::Tensor, torch::Tensor> prediction_output = prediction->forward(hidden_state_tensor);
         HiddenState_t hidden;
-        torch::Tensor pt = hidden_state_tensor.to(get_ctx());
+        torch::Tensor pt = hidden_state_tensor.to(get_cpu_ctx());
         for(int i = 0; i < HIDDEN; i++) {
             hidden.emplace_back(pt[0][i].item<float>());
         }
         Policy_t policy;
-        torch::Tensor lt = prediction_output.first.to(get_ctx());
+        torch::Tensor lt = prediction_output.first.to(get_cpu_ctx());
         for(int i = 0; i < ACTIONS; i++) {
             policy.emplace_back(lt[0][i].item<float>());
         }
-        float  v = prediction_output.second.to(get_ctx()).item<float>();
+        float  v = prediction_output.second.to(get_cpu_ctx()).item<float>();
         assert(!isnan(v));
 //        std::cout << prediction_output.first.size(0) << " " << prediction_output.first.size(1) << std::endl;
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
@@ -1211,19 +1215,19 @@ struct Network {
         std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx));
         std::pair<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(hidden_state_tensor.first);
 
-        torch::Tensor hidden_tensor = hidden_state_tensor.first.to(get_ctx());
+        torch::Tensor hidden_tensor = hidden_state_tensor.first.to(get_cpu_ctx());
         HiddenState_t hidden;
         for(int i = 0; i < HIDDEN; i++) {
             hidden.emplace_back(hidden_tensor[0][i].item<float>());
         }
         Policy_t policy;
-        torch::Tensor lt = prediction_output.first.to(get_ctx());
+        torch::Tensor lt = prediction_output.first.to(get_cpu_ctx());
         for(int i = 0; i < ACTIONS; i++) {
             policy.emplace_back(lt[0][i].item<float>());
         }
 
-        float  r = hidden_state_tensor.second.to(get_ctx()).item<float>();
-        float  v = prediction_output.second.to(get_ctx()).item<float>();
+        float  r = hidden_state_tensor.second.to(get_cpu_ctx()).item<float>();
+        float  v = prediction_output.second.to(get_cpu_ctx()).item<float>();
         assert(!isnan(v));
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
         return NetworkOutput(v, r, policy,
@@ -1538,7 +1542,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
             std::cout << "\t\t loss: " << l << std::endl;
         }
 
-        float abc = *((float*)l.to(get_ctx()).data<float>());
+        float abc = *((float*)l.to(get_cpu_ctx()).data<float>());
         assert(!isnan(abc));
         l.backward({}, false, false);
         opt.step();
