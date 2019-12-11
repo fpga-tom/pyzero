@@ -935,6 +935,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
     torch::nn::Sequential layer4;
     torch::nn::Linear fc;
     torch::nn::Linear fc1;
+    torch::nn::Embedding embedding;
 
     ResNet_dynamics(torch::IntList layers, int64_t num_classes=1000)
             : conv1(conv_options(32, 64, 3, 1, 1)),
@@ -943,8 +944,9 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
               layer2(_make_layer(128, layers[1], 1)),
               layer3(_make_layer(256, layers[2], 1)),
               layer4(_make_layer(512, layers[3], 2)),
-              fc(512 * Block::expansion, num_classes),
-              fc1(512 * Block::expansion, 1)
+              fc(1024 * Block::expansion, num_classes),
+              fc1(1024 * Block::expansion, 1),
+              embedding(torch::nn::Embedding(ACTIONS, HIDDEN))
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -954,6 +956,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         register_module("layer4", layer4);
         register_module("fc", fc);
         register_module("fc1", fc1);
+        register_module("embedding", embedding);
 
         // Initializing weights
 //        for(auto m: this->modules()){
@@ -975,8 +978,10 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
 //        }
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x){
+    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action){
 
+        action = embedding(action);
+        x = torch::cat({x.reshape({-1, HIDDEN}), action.reshape({-1, HIDDEN})});
         x = conv1->forward(x.reshape({-1,32,HIDDEN/32,1}));
         x = bn1->forward(x);
         x = torch::relu(x);
@@ -989,8 +994,9 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
 
         x = torch::avg_pool2d(x, 3, 3, 1);
         torch::Tensor y = x.view({x.sizes()[0], -1});
-        x = fc->forward(y);
-        y = torch::tanh(fc1->forward(y));
+        y = y.flatten();
+        x = fc->forward(y).reshape({-1, HIDDEN});
+        y = torch::tanh(fc1->forward(y)).reshape({-1, 1});
 
         return {x,y};
     }
@@ -1161,8 +1167,8 @@ struct Dynamics : torch::nn::Module {
         network->to(ctx);
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x) {
-        return network->forward(x);
+    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action) {
+        return network->forward(x, action);
     }
 };
 
@@ -1212,7 +1218,8 @@ struct Network {
     }
 
     NetworkOutput recurrent_inference(HiddenState_t hidden_state, Action action) {
-        std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx));
+        std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx),
+                                                                                        torch::tensor({(long)action.index}).to(ctx));
         std::pair<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(hidden_state_tensor.first);
 
         torch::Tensor hidden_tensor = hidden_state_tensor.first.to(get_cpu_ctx());
