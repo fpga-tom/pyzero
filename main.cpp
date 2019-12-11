@@ -14,7 +14,7 @@ torch::Device get_ctx() {
 }
 
 torch::Device get_train_ctx() {
-    return torch::Device("cpu");
+    return torch::Device("cuda:0");
 }
 
 const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
@@ -496,7 +496,7 @@ struct Game {
 
     std::vector<Target> make_target(int state_index, int num_unroll_steps, int td_steps, Player to_play) {
         std::vector<Target> targets;
-        for(int current_index = state_index; current_index < state_index + num_unroll_steps+1; current_index++) {
+        for(int current_index = state_index; current_index < state_index + num_unroll_steps + 1; current_index++) {
             int bootstrap_index = current_index + td_steps;
             float value = 0;
             if (bootstrap_index < root_values.size()) {
@@ -1126,6 +1126,7 @@ struct Representation : torch::nn::Module {
         register_module("embedding", embedding);
         register_module("representation", network);
         network->to(ctx);
+        embedding->to(ctx);
     }
 
     torch::Tensor forward(torch::Tensor x) {
@@ -1161,45 +1162,71 @@ struct Dynamics : torch::nn::Module {
 };
 
 struct Network {
-    at::TensorOptions ctx;
+    torch::Device ctx;
     std::shared_ptr<Representation> representation;
     std::shared_ptr<Dynamics> dynamics;
     std::shared_ptr<Prediction> prediction;
 
     int training_steps;
 
-    Network(torch::Device ctx=get_ctx(), bool train=false) : ctx(ctx), representation(std::make_shared<Representation>(ctx)),
+    Network(torch::Device ctx, bool train=false) : ctx(ctx), representation(std::make_shared<Representation>(ctx)),
         dynamics(std::make_shared<Dynamics>(ctx)), prediction(std::make_shared<Prediction>(ctx)), training_steps(0) {
+        to(ctx);
         representation->train(train);
         dynamics->train(train);
         prediction->train(train);
     }
 
+    void to(torch::Device& ctx) {
+        representation->to(ctx);
+        dynamics->to(ctx);
+        prediction->to(ctx);
+    }
+
     NetworkOutput initial_inference(Image_t &image) {
-        torch::Tensor t = torch::tensor(image);
+        torch::Tensor t = torch::tensor(image).to(ctx);
         torch::Tensor hidden_state_tensor = representation->forward(t);
         std::pair<torch::Tensor, torch::Tensor> prediction_output = prediction->forward(hidden_state_tensor);
-        float * p = hidden_state_tensor.data<float>();
-        float * l = prediction_output.first.data<float>();
-        float * v = prediction_output.second.data<float>();
+        HiddenState_t hidden;
+        torch::Tensor pt = hidden_state_tensor.to(get_ctx());
+        for(int i = 0; i < HIDDEN; i++) {
+            hidden.emplace_back(pt[0][i].item<float>());
+        }
+        Policy_t policy;
+        torch::Tensor lt = prediction_output.first.to(get_ctx());
+        for(int i = 0; i < ACTIONS; i++) {
+            policy.emplace_back(lt[0][i].item<float>());
+        }
+        float  v = prediction_output.second.to(get_ctx()).item<float>();
+        assert(!isnan(v));
 //        std::cout << prediction_output.first.size(0) << " " << prediction_output.first.size(1) << std::endl;
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
-        return NetworkOutput(*v, 0, Policy_t(l, l + prediction_output.first.size(1)),
-                HiddenState_t(p, p + hidden_state_tensor.size(1)),
-                             prediction_output.second, torch::tensor({(float)0}).reshape({-1,1})
+        return NetworkOutput(v, 0, policy, hidden,
+                             prediction_output.second, torch::tensor({(float)0}).to(ctx).reshape({-1,1})
                              .to(ctx), prediction_output.first, hidden_state_tensor);
     }
 
     NetworkOutput recurrent_inference(HiddenState_t hidden_state, Action action) {
-        std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state));
+        std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx));
         std::pair<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(hidden_state_tensor.first);
-        float * p = hidden_state_tensor.first.data<float>();
-        float * r = hidden_state_tensor.second.data<float>();
-        float * l = prediction_output.first.data<float>();
-        float * v = prediction_output.second.data<float>();
+
+        torch::Tensor hidden_tensor = hidden_state_tensor.first.to(get_ctx());
+        HiddenState_t hidden;
+        for(int i = 0; i < HIDDEN; i++) {
+            hidden.emplace_back(hidden_tensor[0][i].item<float>());
+        }
+        Policy_t policy;
+        torch::Tensor lt = prediction_output.first.to(get_ctx());
+        for(int i = 0; i < ACTIONS; i++) {
+            policy.emplace_back(lt[0][i].item<float>());
+        }
+
+        float  r = hidden_state_tensor.second.to(get_ctx()).item<float>();
+        float  v = prediction_output.second.to(get_ctx()).item<float>();
+        assert(!isnan(v));
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
-        return NetworkOutput(*v, *r, Policy_t(l, l + prediction_output.first.size(1)),
-                HiddenState_t(p, p + hidden_state_tensor.first.size(1)),
+        return NetworkOutput(v, r, policy,
+                hidden,
                 prediction_output.second, hidden_state_tensor.second, prediction_output.first, hidden_state_tensor.first);
     }
 
@@ -1254,12 +1281,13 @@ struct Network {
 };
 
 struct SharedStorage {
-    Network latest_network() {
+    Network latest_network(torch::Device ctx) {
         if (boost::filesystem::is_empty("/home/tomas/CLionProjects/muzero/network")) {
-            return make_uniform_network();
+            return make_uniform_network(ctx);
         }
-        Network network = make_uniform_network();
+        Network network = make_uniform_network(ctx);
         network.load_network("/home/tomas/CLionProjects/muzero/network/latest");
+        network.to(ctx);
         return network;
     }
 
@@ -1267,8 +1295,8 @@ struct SharedStorage {
         network.save_network("/home/tomas/CLionProjects/muzero/network/latest");
     }
 
-    Network make_uniform_network() {
-        return Network();
+    Network make_uniform_network(torch::Device& ctx) {
+        return Network(ctx);
     }
 };
 
@@ -1414,7 +1442,7 @@ std::shared_ptr<Game> play_game(MuZeroConfig& config, Network& network) {
 
 void run_selfplay(MuZeroConfig config, SharedStorage storage, ReplayBuffer replay_buffer, int tid) {
     for(;;) {
-        Network network = storage.latest_network();
+        Network network = storage.latest_network(get_ctx());
         std::shared_ptr<Game> game = play_game(config, network);
         replay_buffer.save_game(game);
     }
@@ -1477,23 +1505,24 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         torch::Tensor rewards = rewards_v.to(ctx);
         torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1,1}).to(ctx);
         torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
+        torch::Tensor target_policies = target_policies_v.to(ctx);
 //        std::cout << logits.size(0) << " / " << logits.size(1) << std::endl;
 //        torch::Tensor target_policies = torch::from_blob(target_policies_v.data(),
 //                {static_cast<long>(target_policies_v.size()), static_cast<long>(target_policies_v[0].size())}).to(ctx);
 //        std::cout << target_policies.size(0) << " / " << target_policies.size(1) << std::endl;
 
-//        std::cout << "values: " <<  values << std::endl;
+//        std::cout << "values: " <<  values_v << std::endl;
 //        std::cout << "target_values: " << target_values << std::endl;
 //        std::cout << "logits: " << logits << std::endl;
 //        std::cout << "target_policies: " << target_policies << std::endl;
         torch::Tensor l = torch::mse_loss(values, target_values) + torch::mse_loss(rewards, target_rewards)
-                + cross_entropy_loss(logits, target_policies_v.to(ctx));
+                + cross_entropy_loss(logits, target_policies);
 //                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
         if(i == 0) {
             std::cout << "\t\t loss: " << l << std::endl;
         }
 
-        float abc = *((float*)l.data<float>());
+        float abc = *((float*)l.to(get_ctx()).data<float>());
         assert(!isnan(abc));
         l.backward({}, false, false);
         opt.step();
@@ -1512,7 +1541,7 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& r
     std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
     std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
 
-    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init));
+    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init));
 
     for(int i = 0; i < config.training_steps; i++) {
         std::cout << "\t train step: " << i << std::endl;
@@ -1542,7 +1571,7 @@ Network muzero(MuZeroConfig config) {
     train_network(config, storage, replay_buffer, get_train_ctx());
 
 
-    return storage.latest_network();
+    return storage.latest_network(get_train_ctx());
 }
 
 
