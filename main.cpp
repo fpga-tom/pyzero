@@ -7,6 +7,7 @@
 #include <boost/uuid/random_generator.hpp>
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/filesystem/fstream.hpp>
 #include "random.h"
 
 torch::Device get_ctx() {
@@ -1281,18 +1282,33 @@ struct Network {
 };
 
 struct SharedStorage {
+    void lock() {
+        while(boost::filesystem::exists("/home/tomas/CLionProjects/muzero/network/lock")) {
+            sleep(1);
+        }
+        boost::filesystem::ofstream("/home/tomas/CLionProjects/muzero/network/lock");
+    }
+    void unlock() {
+        if(boost::filesystem::exists("/home/tomas/CLionProjects/muzero/network/lock")) {
+            boost::filesystem::remove("/home/tomas/CLionProjects/muzero/network/lock");
+        }
+    }
     Network latest_network(torch::Device ctx) {
         if (boost::filesystem::is_empty("/home/tomas/CLionProjects/muzero/network")) {
             return make_uniform_network(ctx);
         }
         Network network = make_uniform_network(ctx);
+        lock();
         network.load_network("/home/tomas/CLionProjects/muzero/network/latest");
+        unlock();
         network.to(ctx);
         return network;
     }
 
     void save_network(int step, Network& network) {
+        lock();
         network.save_network("/home/tomas/CLionProjects/muzero/network/latest");
+        unlock();
     }
 
     Network make_uniform_network(torch::Device& ctx) {
@@ -1541,7 +1557,7 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& r
     std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
     std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
 
-    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init));
+    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init));
 
     for(int i = 0; i < config.training_steps; i++) {
         std::cout << "\t train step: " << i << std::endl;
