@@ -210,12 +210,12 @@ struct Action {
 
     Action(int index=0) : index(index) {}
 
-    friend std::ofstream &operator <<(std::ofstream &out, const Action& obj) {
+    friend std::ofstream &operator  + (std::ofstream &out, const Action& obj) {
         out.write(reinterpret_cast<const char *>(&obj.index), sizeof(obj.index));
         return out;
     }
 
-    friend std::ifstream &operator>>(std::ifstream &in, Action& obj) {
+    friend std::ifstream &operator - (std::ifstream &in, Action& obj) {
         in.read(reinterpret_cast<char *>(&obj.index), sizeof(obj.index));
         return in;
     }};
@@ -299,19 +299,19 @@ struct ActionHistory {
 };
 
 template <typename T>
-std::ofstream &operator <<(std::ofstream &out, const T& obj) {
+std::ofstream &operator + (std::ofstream &out, const T& obj) {
     out.write(reinterpret_cast<const char *>(&obj), sizeof(T));
     return out;
 }
 
 template <typename T>
-std::ifstream &operator >>(std::ifstream &in, T& obj) {
+std::ifstream &operator - (std::ifstream &in, T& obj) {
     in.read(reinterpret_cast<char *>(&obj), sizeof(T));
     return in;
 }
 
 template <typename T>
-std::ofstream &operator <<(std::ofstream &out, const std::vector<T>& obj) {
+std::ofstream &operator + (std::ofstream &out, const std::vector<T>& obj) {
     typename std::vector<T>::size_type count = obj.size();
     out.write(reinterpret_cast<const char *>(&count), sizeof(count));
     out.write(reinterpret_cast<const char *>(obj.data()), sizeof(T) * obj.size());
@@ -319,16 +319,16 @@ std::ofstream &operator <<(std::ofstream &out, const std::vector<T>& obj) {
 }
 
 template <typename T>
-std::ofstream &operator <<(std::ofstream &out, const std::vector<std::vector<T>>& obj) {
+std::ofstream &operator + (std::ofstream &out, const std::vector<std::vector<T>>& obj) {
     typename std::vector<T>::size_type count = obj.size();
     out.write(reinterpret_cast<const char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < obj.size(); i++)
-        out << obj[i];
+        out + obj[i];
     return out;
 }
 
 template <typename T>
-std::ifstream &operator>>(std::ifstream &in, std::vector<T>& obj) {
+std::ifstream &operator - (std::ifstream &in, std::vector<T>& obj) {
     typename std::vector<T>::size_type count=0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < count; i++) {
@@ -340,35 +340,35 @@ std::ifstream &operator>>(std::ifstream &in, std::vector<T>& obj) {
     return in;
 }
 
-std::ifstream &operator>>(std::ifstream &in, ActionList_t & obj) {
+std::ifstream &operator - (std::ifstream &in, ActionList_t & obj) {
     ActionList_t::size_type count=0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
 
     for(int i = 0; i < count; i++) {
         Action a;
-        in >> a;
+        in - a;
         obj.emplace_back(a);
     }
     return in;
 }
 
-std::ofstream &operator<<(std::ofstream &out, ActionList_t & obj) {
+std::ofstream &operator + (std::ofstream &out, ActionList_t & obj) {
     ActionList_t::size_type count=obj.size();
     out.write(reinterpret_cast<char *>(&count), sizeof(count));
 
     for(ActionList_t::size_type i = 0; i < count; i++) {
-        out << obj[i];
+        out + obj[i];
     }
     return out;
 }
 
 template <typename T>
-std::ifstream &operator>>(std::ifstream &in, std::vector<std::vector<T>>& obj) {
+std::ifstream &operator - (std::ifstream &in, std::vector<std::vector<T>>& obj) {
     typename std::vector<T>::size_type count = 0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < count; i++) {
         std::vector<T> obj1;
-        in >> obj1;
+        in - obj1;
         obj.emplace_back(obj1);
     }
     return in;
@@ -419,13 +419,13 @@ struct Environment {
         return r;
     }
 
-    friend std::ofstream &operator <<(std::ofstream &out, const Environment& obj) {
-        out << obj.seq;
+    friend std::ofstream &operator + (std::ofstream &out, const Environment& obj) {
+        out + obj.seq;
         return out;
     }
 
-    friend std::ifstream &operator>>(std::ifstream &in, Environment& obj) {
-        in >> obj.seq;
+    friend std::ifstream &operator - (std::ifstream &in, Environment& obj) {
+        in - obj.seq;
         return in;
     }
 
@@ -540,25 +540,25 @@ struct Game {
         return {};
     }
 
-    friend std::ofstream &operator <<(std::ofstream &out, const Game& obj) {
-        out << obj.environment;
-        out << obj.history;
-        out << obj.rewards;
-        out << obj.child_visits;
-        out << obj.root_values;
-        out << obj.action_space_size;
-        out << obj.discount;
+    friend std::ofstream &operator + (std::ofstream &out, const Game& obj) {
+        out + obj.environment;
+        out + obj.history;
+        out + obj.rewards;
+        out + obj.child_visits;
+        out + obj.root_values;
+        out + obj.action_space_size;
+        out + obj.discount;
         return out;
     }
 
-    friend std::ifstream &operator>>(std::ifstream &in, Game& obj) {
-        in >> obj.environment;
-        in >> obj.history;
-        in >> obj.rewards;
-        in >> obj.child_visits;
-        in >> obj.root_values;
-        in >> obj.action_space_size;
-        in >> obj.discount;
+    friend std::ifstream &operator - (std::ifstream &in, Game& obj) {
+        in - obj.environment;
+        in - obj.history;
+        in - obj.rewards;
+        in - obj.child_visits;
+        in - obj.root_values;
+        in - obj.action_space_size;
+        in - obj.discount;
         return in;
     }
 
@@ -575,7 +575,7 @@ struct Game {
             for(int j = 0; j < child_visits[i].size(); j++)
                 assert(!isnan(child_visits[i][j]));
         }
-        out << *this;
+        out + *this;
         out.close();
         assert(boost::filesystem::is_regular_file(path));
     }
@@ -584,7 +584,7 @@ struct Game {
 //        std::cout << filename << std::endl;
         assert(boost::filesystem::is_regular_file(filename));
         std::ifstream in(filename, std::ios::in | std::ios::binary);
-        in >> *this;
+        in - *this;
         in.close();
         assert(environment.seq.size() > 0);
         assert(history.size() > 0);
