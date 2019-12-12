@@ -221,7 +221,11 @@ struct Action {
     }};
 
 struct Player {
-    int id = -1;
+    int id;
+
+    Player() : id(-1) {
+
+    }
 
 };
 
@@ -494,7 +498,7 @@ struct Game {
         std::copy(environment.seq.begin() + low, environment.seq.begin() + state_index + 1, std::back_inserter(r));
         int pad = HISTORY - r.size();
         for(int i = 0;i < pad; i++) {
-            r.emplace_back(0);
+            r.emplace_back(ACTIONS);
         }
         return r;
     }
@@ -1022,24 +1026,34 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         register_module("layer4", layer4);
         register_module("fc", fc);
 
+
+//        init_x(conv1->parameters());
+
+
         // Initializing weights
-//        for(auto m: this->modules()){
-//            if (m->name() == "torch::nn::Conv2dImpl"){
-//                for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p.values());
-//                }
-//            }
-//            else if (m->name() == "torch::nn::BatchNormImpl"){
-//                for (auto p: m->parameters()){
-//                    if (p. == "weight"){
-//                        torch::nn::init::constant_(p.value, 1);
-//                    }
-//                    else if (p.key == "bias"){
-//                        torch::nn::init::constant_(p.value, 0);
-//                    }
-//                }
-//            }
-//        }
+        for(auto m: modules(false)){
+            if (m->name() == "torch::nn::Conv2dImpl"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                }
+            }
+            else if (m->name() == "torch::nn::BatchNormImpl"){
+                for (auto p: m->named_parameters()){
+                    if (p.key() == "weight"){
+                        torch::nn::init::constant_(*p, 1);
+                    }
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
+                    }
+                }
+            }
+        }
+    }
+
+    void init_x(std::vector<torch::Tensor> t) {
+        for(int i = 0; i < t.size(); i++) {
+            torch::nn::init::xavier_normal_(t[i]);
+        }
     }
 
     torch::Tensor forward(torch::Tensor x){
@@ -1122,7 +1136,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
               bn3(32),
               fc3(64 * Block::expansion, 64),
               fc4(64, num_classes),
-              embedding(torch::nn::Embedding(ACTIONS, HIDDEN))
+              embedding(torch::nn::Embedding(ACTIONS+1, HIDDEN))
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1145,29 +1159,29 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         register_module("fc4", fc4);
 
         // Initializing weights
-//        for(auto m: this->modules()){
-//            if (m->name() == "torch::nn::Conv2dImpl"){
-//                for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p.values());
-//                }
-//            }
-//            else if (m->name() == "torch::nn::BatchNormImpl"){
-//                for (auto p: m->parameters()){
-//                    if (p. == "weight"){
-//                        torch::nn::init::constant_(p.value, 1);
-//                    }
-//                    else if (p.key == "bias"){
-//                        torch::nn::init::constant_(p.value, 0);
-//                    }
-//                }
-//            }
-//        }
+        for(auto m: this->modules(false)){
+            if (m->name() == "torch::nn::Conv2dImpl"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                }
+            }
+            else if (m->name() == "torch::nn::BatchNormImpl"){
+                for (auto p: m->named_parameters()){
+                    if (p.key() == "weight"){
+                        torch::nn::init::constant_(*p, 1);
+                    }
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
+                    }
+                }
+            }
+        }
     }
 
     std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action){
 
         action = embedding(action);
-        x = torch::cat({x.reshape({-1, HIDDEN}), action.reshape({-1, HIDDEN})});
+        x = torch::cat({x.reshape({-1, HIDDEN}), action.reshape({-1, HIDDEN})}, 1);
         x = conv1->forward(x.reshape({-1,32,HIDDEN/32,1}));
         x = bn1->forward(x);
         x = torch::relu(x);
@@ -1281,23 +1295,23 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         register_module("fc4", fc4);
 
         // Initializing weights
-//        for(auto m: this->modules()){
-//            if (m->name() == "torch::nn::Conv2dImpl"){
-//                for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p.values());
-//                }
-//            }
-//            else if (m->name() == "torch::nn::BatchNormImpl"){
-//                for (auto p: m->parameters()){
-//                    if (p. == "weight"){
-//                        torch::nn::init::constant_(p.value, 1);
-//                    }
-//                    else if (p.key == "bias"){
-//                        torch::nn::init::constant_(p.value, 0);
-//                    }
-//                }
-//            }
-//        }
+        for(auto m: this->modules(false)){
+            if (m->name() == "torch::nn::Conv2dImpl"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                }
+            }
+            else if (m->name() == "torch::nn::BatchNormImpl"){
+                for (auto p: m->named_parameters()){
+                    if (p.key() == "weight"){
+                        torch::nn::init::constant_(*p, 1);
+                    }
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
+                    }
+                }
+            }
+        }
     }
 
     std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x){
@@ -1372,7 +1386,7 @@ struct Representation : torch::nn::Module {
     std::shared_ptr<ResNet_representation<BasicBlock>> network;
     torch::nn::Embedding embedding;
     Representation(torch::Device& ctx) : ctx(ctx), network(resnet_representation(HIDDEN)),
-        embedding(torch::nn::Embedding(ACTIONS, 20)) {
+        embedding(torch::nn::Embedding(ACTIONS+1, 20)) {
         register_module("embedding", embedding);
         register_module("representation", network);
         network->to(ctx);
@@ -1586,6 +1600,7 @@ int softmax_sample(std::vector<float> visit_counts, float temperature) {
         d.emplace_back(s);
     }
 
+
     std::default_random_engine generator;
     std::discrete_distribution<int> distribution(d.begin(), d.end());
 
@@ -1604,7 +1619,7 @@ void backpropagate(std::vector<std::shared_ptr<Node>> &search_path, float value,
         MinMaxStats& min_max_stats) {
     for(int i = 0; i < search_path.size(); i++) {
         std::shared_ptr<Node> node(search_path[i]);
-        node->value_sum += node->to_play == to_play.id ? value : -value;
+        node->value_sum += value;//node->to_play == to_play.id ? value : -value;
         node->visit_count +=1;
         min_max_stats.update(node->value());
         value = node->reward + discount * value;
@@ -1791,6 +1806,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
                 + cross_entropy_loss(logits, target_policies);
 //                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
 //        if(i == 0) {
+        l *= 100./logits.size(0);
             std::cout << "\t\t loss: " << l << std::endl;
 //        }
 
@@ -1824,6 +1840,7 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& r
         std::vector<Batch> batch = replay_buffer.sample_batch(config.num_unroll_steps, config.td_steps);
         update_weights(opt, network, batch, config.weight_decay, ctx);
         network.training_steps++;
+        sleep(10);
     }
     storage.save_network(config.training_steps, network);
 
