@@ -305,8 +305,8 @@ std::ofstream &operator <<(std::ofstream &out, const T& obj) {
 }
 
 template <typename T>
-std::ifstream &operator >>(std::ifstream &in, const T& obj) {
-    in.read((std::ifstream::char_type *)(&obj), sizeof(T));
+std::ifstream &operator >>(std::ifstream &in, T& obj) {
+    in.read(reinterpret_cast<char *>(&obj), sizeof(T));
     return in;
 }
 
@@ -541,24 +541,24 @@ struct Game {
     }
 
     friend std::ofstream &operator <<(std::ofstream &out, const Game& obj) {
-        out << obj.environment
-         << obj.history
-         << obj.rewards
-         << obj.child_visits
-         << obj.root_values
-         << (int)obj.action_space_size
-         << (int)obj.discount;
+        out << obj.environment;
+        out << obj.history;
+        out << obj.rewards;
+        out << obj.child_visits;
+        out << obj.root_values;
+        out << obj.action_space_size;
+        out << obj.discount;
         return out;
     }
 
     friend std::ifstream &operator>>(std::ifstream &in, Game& obj) {
-        in >> obj.environment
-        >> obj.history
-        >> obj.rewards
-        >> obj.child_visits
-        >> obj.root_values
-        >> (int)obj.action_space_size
-        >> (int)obj.discount;
+        in >> obj.environment;
+        in >> obj.history;
+        in >> obj.rewards;
+        in >> obj.child_visits;
+        in >> obj.root_values;
+        in >> obj.action_space_size;
+        in >> obj.discount;
         return in;
     }
 
@@ -569,6 +569,8 @@ struct Game {
         assert(history.size() > 0);
         assert(child_visits.size() > 0);
         assert(child_visits[0].size() > 0);
+        assert(action_space_size == ACTIONS);
+        assert(discount != (float)0.);
         for(int i = 0; i < child_visits.size(); i++) {
             for(int j = 0; j < child_visits[i].size(); j++)
                 assert(!isnan(child_visits[i][j]));
@@ -610,6 +612,9 @@ struct Batch {
     }
 
 };
+
+std::random_device seeder;
+std::mt19937 engine(seeder());
 
 struct ReplayBuffer {
     int window_size;
@@ -667,8 +672,8 @@ struct ReplayBuffer {
                 static_cast<bool(*)(const boost::filesystem::path&)>(boost::filesystem::is_regular_file) );
 
 
-        std::random_device seeder;
-        std::mt19937 engine(seeder());
+//        std::random_device seeder;
+//        std::mt19937 engine(seeder());
         std::uniform_int_distribution<int> dist(0, cnt-1);
         int guess = dist(engine);
 
@@ -677,6 +682,8 @@ struct ReplayBuffer {
             if(guess == 0) {
                 auto game = std::make_shared<Game>(0, 0);
                 game->load(it->path().c_str());
+                assert(game->action_space_size == ACTIONS);
+                assert(game->discount == (float)1.);
                 return game;
             } else {
                 guess--;
@@ -686,8 +693,7 @@ struct ReplayBuffer {
     }
 
     int sample_position(std::shared_ptr<Game>& game) {
-        std::random_device seeder;
-        std::mt19937 engine(seeder());
+
         std::uniform_int_distribution<int> dist(0, game->history.size()-1);
         int guess = dist(engine);
         return guess;
