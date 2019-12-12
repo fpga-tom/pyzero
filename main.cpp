@@ -340,7 +340,7 @@ std::ifstream &read (std::ifstream &in, std::vector<T>& obj) {
     return in;
 }
 
-std::ifstream &read (std::ifstream &in, ActionList_t & obj) {
+std::ifstream &read_action (std::ifstream &in, ActionList_t & obj) {
     ActionList_t::size_type count=0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
 
@@ -352,7 +352,7 @@ std::ifstream &read (std::ifstream &in, ActionList_t & obj) {
     return in;
 }
 
-std::ofstream &write (std::ofstream &out, ActionList_t & obj) {
+std::ofstream &write_action (std::ofstream &out, const ActionList_t & obj) {
     ActionList_t::size_type count=obj.size();
     out.write(reinterpret_cast<char *>(&count), sizeof(count));
 
@@ -542,7 +542,7 @@ struct Game {
 
     friend std::ofstream &write (std::ofstream &out, const Game& obj) {
         write(out , obj.environment);
-        write(out , obj.history);
+        write_action(out , obj.history);
         write(out , obj.rewards);
         write(out , obj.child_visits);
         write(out , obj.root_values);
@@ -553,7 +553,7 @@ struct Game {
 
     friend std::ifstream &read (std::ifstream &in, Game& obj) {
         read(in , obj.environment);
-        read(in , obj.history);
+        read_action(in , obj.history);
         read(in , obj.rewards);
         read(in , obj.child_visits);
         read(in , obj.root_values);
