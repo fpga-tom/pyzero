@@ -210,12 +210,12 @@ struct Action {
 
     Action(int index=0) : index(index) {}
 
-    friend std::ofstream &operator  + (std::ofstream &out, const Action& obj) {
+    friend std::ofstream& write (std::ofstream &out, const Action& obj) {
         out.write(reinterpret_cast<const char *>(&obj.index), sizeof(obj.index));
         return out;
     }
 
-    friend std::ifstream &operator - (std::ifstream &in, Action& obj) {
+    friend std::ifstream &read (std::ifstream &in, Action& obj) {
         in.read(reinterpret_cast<char *>(&obj.index), sizeof(obj.index));
         return in;
     }};
