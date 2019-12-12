@@ -191,7 +191,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             max_moves, 1.0,
             dirichlet_alpha,
             800,
-            256,
+            128,
             max_moves,  //Always use Monte Carlo return.
             3,
             lr_init,
@@ -1741,6 +1741,7 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
     return -(target * torch::log_softmax(input,1)).sum(1).mean();
 }
 
+
 void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx) {
     torch::Tensor values_v;
     std::vector<float> target_values_v;
@@ -1786,10 +1787,10 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         }
     }
 
-        torch::Tensor values = values_v.to(ctx);
-        torch::Tensor target_values = torch::tensor(target_values_v).to(ctx);
-        torch::Tensor rewards = rewards_v.to(ctx);
-        torch::Tensor target_rewards = torch::tensor(target_rewards_v).to(ctx);
+        torch::Tensor values = values_v.reshape({-1, 1}).to(ctx);
+        torch::Tensor target_values = torch::tensor(target_values_v).reshape({-1, 1}).to(ctx);
+        torch::Tensor rewards = rewards_v.reshape({-1, 1}).to(ctx);
+        torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1, 1}).to(ctx);
         torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
         torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
 //        std::cout << logits.size(0) << " / " << logits.size(1) << std::endl;
@@ -1806,7 +1807,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
                 + cross_entropy_loss(logits, target_policies);
 //                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
 //        if(i == 0) {
-        l *= 100./logits.size(0);
+//        l *= 100./logits.size(0);
             std::cout << "\t\t loss: " << l << std::endl;
 //        }
 
@@ -1830,7 +1831,7 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& r
     std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
     std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
 
-    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init));
+    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init).weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
         std::cout << "\t train step: " << i << std::endl;
