@@ -299,19 +299,19 @@ struct ActionHistory {
 };
 
 template <typename T>
-std::ofstream &operator + (std::ofstream &out, const T& obj) {
+std::ofstream& write(std::ofstream &out, const T& obj) {
     out.write(reinterpret_cast<const char *>(&obj), sizeof(T));
     return out;
 }
 
 template <typename T>
-std::ifstream &operator - (std::ifstream &in, T& obj) {
+std::ifstream& read(std::ifstream &in, T& obj) {
     in.read(reinterpret_cast<char *>(&obj), sizeof(T));
     return in;
 }
 
 template <typename T>
-std::ofstream &operator + (std::ofstream &out, const std::vector<T>& obj) {
+std::ofstream &write (std::ofstream &out, const std::vector<T>& obj) {
     typename std::vector<T>::size_type count = obj.size();
     out.write(reinterpret_cast<const char *>(&count), sizeof(count));
     out.write(reinterpret_cast<const char *>(obj.data()), sizeof(T) * obj.size());
@@ -319,16 +319,16 @@ std::ofstream &operator + (std::ofstream &out, const std::vector<T>& obj) {
 }
 
 template <typename T>
-std::ofstream &operator + (std::ofstream &out, const std::vector<std::vector<T>>& obj) {
+std::ofstream &write (std::ofstream &out, const std::vector<std::vector<T>>& obj) {
     typename std::vector<T>::size_type count = obj.size();
     out.write(reinterpret_cast<const char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < obj.size(); i++)
-        out + obj[i];
+        write(out, obj[i]);
     return out;
 }
 
 template <typename T>
-std::ifstream &operator - (std::ifstream &in, std::vector<T>& obj) {
+std::ifstream &read (std::ifstream &in, std::vector<T>& obj) {
     typename std::vector<T>::size_type count=0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < count; i++) {
@@ -340,35 +340,35 @@ std::ifstream &operator - (std::ifstream &in, std::vector<T>& obj) {
     return in;
 }
 
-std::ifstream &operator - (std::ifstream &in, ActionList_t & obj) {
+std::ifstream &read (std::ifstream &in, ActionList_t & obj) {
     ActionList_t::size_type count=0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
 
     for(int i = 0; i < count; i++) {
         Action a;
-        in - a;
+        read(in,a);
         obj.emplace_back(a);
     }
     return in;
 }
 
-std::ofstream &operator + (std::ofstream &out, ActionList_t & obj) {
+std::ofstream &write (std::ofstream &out, ActionList_t & obj) {
     ActionList_t::size_type count=obj.size();
     out.write(reinterpret_cast<char *>(&count), sizeof(count));
 
     for(ActionList_t::size_type i = 0; i < count; i++) {
-        out + obj[i];
+        write(out,obj[i]);
     }
     return out;
 }
 
 template <typename T>
-std::ifstream &operator - (std::ifstream &in, std::vector<std::vector<T>>& obj) {
+std::ifstream &read (std::ifstream &in, std::vector<std::vector<T>>& obj) {
     typename std::vector<T>::size_type count = 0;
     in.read(reinterpret_cast<char *>(&count), sizeof(count));
     for(typename std::vector<T>::size_type i = 0; i < count; i++) {
         std::vector<T> obj1;
-        in - obj1;
+        read(in, obj1);
         obj.emplace_back(obj1);
     }
     return in;
@@ -419,13 +419,13 @@ struct Environment {
         return r;
     }
 
-    friend std::ofstream &operator + (std::ofstream &out, const Environment& obj) {
-        out + obj.seq;
+    friend std::ofstream &write (std::ofstream &out, const Environment& obj) {
+        write(out, obj.seq);
         return out;
     }
 
-    friend std::ifstream &operator - (std::ifstream &in, Environment& obj) {
-        in - obj.seq;
+    friend std::ifstream &read (std::ifstream &in, Environment& obj) {
+        read(in, obj.seq);
         return in;
     }
 
@@ -540,25 +540,25 @@ struct Game {
         return {};
     }
 
-    friend std::ofstream &operator + (std::ofstream &out, const Game& obj) {
-        out + obj.environment;
-        out + obj.history;
-        out + obj.rewards;
-        out + obj.child_visits;
-        out + obj.root_values;
-        out + obj.action_space_size;
-        out + obj.discount;
+    friend std::ofstream &write (std::ofstream &out, const Game& obj) {
+        write(out , obj.environment);
+        write(out , obj.history);
+        write(out , obj.rewards);
+        write(out , obj.child_visits);
+        write(out , obj.root_values);
+        write(out , obj.action_space_size);
+        write(out , obj.discount);
         return out;
     }
 
-    friend std::ifstream &operator - (std::ifstream &in, Game& obj) {
-        in - obj.environment;
-        in - obj.history;
-        in - obj.rewards;
-        in - obj.child_visits;
-        in - obj.root_values;
-        in - obj.action_space_size;
-        in - obj.discount;
+    friend std::ifstream &read (std::ifstream &in, Game& obj) {
+        read(in , obj.environment);
+        read(in , obj.history);
+        read(in , obj.rewards);
+        read(in , obj.child_visits);
+        read(in , obj.root_values);
+        read(in , obj.action_space_size);
+        read(in , obj.discount);
         return in;
     }
 
@@ -570,12 +570,12 @@ struct Game {
         assert(child_visits.size() > 0);
         assert(child_visits[0].size() > 0);
         assert(action_space_size == ACTIONS);
-        assert(discount != (float)0.);
+        assert(discount == (float)1.);
         for(int i = 0; i < child_visits.size(); i++) {
             for(int j = 0; j < child_visits[i].size(); j++)
                 assert(!isnan(child_visits[i][j]));
         }
-        out + *this;
+        write(out , *this);
         out.close();
         assert(boost::filesystem::is_regular_file(path));
     }
@@ -584,7 +584,7 @@ struct Game {
 //        std::cout << filename << std::endl;
         assert(boost::filesystem::is_regular_file(filename));
         std::ifstream in(filename, std::ios::in | std::ios::binary);
-        in - *this;
+        read(in, *this);
         in.close();
         assert(environment.seq.size() > 0);
         assert(history.size() > 0);
