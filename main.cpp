@@ -1631,8 +1631,13 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    std::cout << torch::log_softmax(input,1) << std::endl;
     std::cout << input.sizes() << std::endl;
 //    std::cout << target  << std::endl;
-    torch::Tensor t = torch::softmax(input, 1)/(target+1e-8);
-    return -((target + 1e-8) *torch::log(t)).sum(1).mean();
+//    torch::Tensor t = torch::softmax(input, 1)/(target+1e-8);
+//    return -((target + 1e-8) *torch::log(t)).sum(1).mean();
+
+    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
+    std::cout << t.sizes() << std::endl;
+    return -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
+//    return -(target *torch::log_softmax(input, 1)).sum(1).mean();
 }
 
 
@@ -1645,10 +1650,8 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     torch::Tensor logits_v;
     torch::Tensor target_policies_v;
 
+    network.zero_grad();
     for (int i = 0; i < batch.size(); i++) {
-
-
-        network.zero_grad();
 
         std::vector<NetworkOutput> predictions;
 
