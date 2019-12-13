@@ -112,7 +112,7 @@ struct MuZeroConfig {
 
             // Training
             training_steps(int(1000e3)),
-            checkpoint_interval(int(5)),
+            checkpoint_interval(int(100)),
             window_size(int(1e6)),
             batch_size(batch_size),
             num_unroll_steps(5),
@@ -190,10 +190,10 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            800,
-            128,
+            400,
+            64,
             max_moves,  //Always use Monte Carlo return.
-            3,
+            0,
             lr_init,
             400e3,
             new VisitSoftmaxTemperatureFn1(),
@@ -590,6 +590,9 @@ struct Game {
         assert(history.size() > 0);
         assert(child_visits.size() > 0);
         assert(child_visits[0].size() > 0);
+        assert(action_space_size == ACTIONS);
+        assert(discount == 1.);
+
 
         for(int i = 0; i < child_visits.size(); i++) {
             for(int j = 0; j < child_visits[i].size(); j++)
@@ -625,10 +628,10 @@ struct ReplayBuffer {
     }
 
     void save_game(std::shared_ptr<Game> game) {
-        if(buffer.size() > window_size) {
-            buffer.erase(buffer.begin());
-        }
-        buffer.emplace_back(game);
+//        if(buffer.size() > window_size) {
+//            buffer.erase(buffer.begin());
+//        }
+//        buffer.emplace_back(game);
         boost::uuids::random_generator gen;
         boost::uuids::uuid u = gen();
         game->save(boost::uuids::to_string(u));
@@ -638,8 +641,9 @@ struct ReplayBuffer {
         std::vector<Batch> result;
         std::vector<std::shared_ptr<Game>> games;
         for(int i = 0; i < batch_size; i++) {
-            games.emplace_back(sample_game());
+            games.emplace_back(sample_game(i));
         }
+
         std::vector<int> game_pos;
         for(int i = 0; i < games.size(); i++) {
             game_pos.emplace_back(sample_position(games[i]));
@@ -655,7 +659,7 @@ struct ReplayBuffer {
         return result;
     }
 
-    std::shared_ptr<Game> sample_game() {
+    std::shared_ptr<Game> sample_game(int gid) {
         std::string path = "/home/tomas/CLionProjects/muzero/replay_buffer/";
         while(!boost::filesystem::is_directory(path)) {
             sleep(5);
@@ -666,30 +670,42 @@ struct ReplayBuffer {
             sleep(5);
         }
 
-        int cnt = std::count_if(
-        boost::filesystem::directory_iterator(path),
-        boost::filesystem::directory_iterator(),
-                static_cast<bool(*)(const boost::filesystem::path&)>(boost::filesystem::is_regular_file) );
+//        int cnt = std::count_if(
+//        boost::filesystem::directory_iterator(path),
+//        boost::filesystem::directory_iterator(),
+//                static_cast<bool(*)(const boost::filesystem::path&)>(boost::filesystem::is_regular_file) );
 
+        typedef std::multimap<std::time_t, boost::filesystem::path> result_set_t;
+        result_set_t result_set;
 
 //        std::random_device seeder;
 //        std::mt19937 engine(seeder());
-        std::uniform_int_distribution<int> dist(0, cnt-1);
-        int guess = dist(engine);
+
 
 
         for(boost::filesystem::directory_iterator it(path); it != boost::filesystem::directory_iterator(); ++it) {
-            if(guess == 0) {
-                auto game = std::make_shared<Game>(0, 0);
-                game->load(it->path().c_str());
-                assert(game->action_space_size == ACTIONS);
-                assert(game->discount == (float)1.);
-                return game;
-            } else {
-                guess--;
+            if (boost::filesystem::is_regular_file(it->status()) )
+            {
+                result_set.insert(result_set_t::value_type(boost::filesystem::last_write_time(it->path()), *it));
             }
         }
-        assert(false);
+
+        std::uniform_int_distribution<int> dist(0, result_set.size()-1);
+        int guess = dist(engine);
+        auto game = std::make_shared<Game>(0, 0);
+        int count = 0;
+        for(auto it = result_set.begin(); it != result_set.end(); ++it) {
+            if(count == guess) {
+                game->load((*it).second.c_str());
+                break;
+            }
+            count++;
+        }
+
+        assert(game->action_space_size == ACTIONS);
+        assert(game->discount == (float)1.);
+        return game;
+
     }
 
     int sample_position(std::shared_ptr<Game>& game) {
@@ -728,164 +744,6 @@ torch::nn::Conv2dOptions conv_options(int64_t in_planes, int64_t out_planes, int
     conv_options.with_bias(with_bias);
     return conv_options;
 }
-/*
-torch::nn::Conv2dOptions conv_options_auto(int64_t in_planes, int64_t out_planes, int64_t kernel_size,
-                                      int64_t stride=1, bool with_bias=false){
-    torch::nn::Conv2dOptions conv_options = torch::nn::Conv2dOptions(in_planes, out_planes, kernel_size);
-    conv_options.stride(stride);
-    conv_options.padding(kernel_size / 2);
-    conv_options.with_bias(with_bias);
-    return conv_options;
-}
-
-struct Conv3x3 : torch::nn::Module {
-    torch::nn::Conv2d conv;
-
-    Conv3x3(int64_t in_planes, int64_t out_planes, int64_t stride=1, int64_t kernel_size=3, bool bias=false) :
-        conv(torch::nn::Conv2d(conv_options_auto(in_planes, out_planes, kernel_size, stride, bias))) {
-        register_module("conv", conv);
-    }
-};
-
-struct ResidualBlock : torch::nn::Module {
-
-    int64_t in_planes, out_planes;
-
-    ResidualBlock(int64_t in_planes, int64_t out_planes) :
-        in_planes(in_planes), out_planes(out_planes) {
-
-    }
-
-    virtual torch::Tensor blocks(torch::Tensor x) = 0;
-    virtual torch::Tensor shortcut(torch::Tensor x) = 0;
-    virtual bool should_apply_shortcut() {
-        return in_planes != out_planes;
-    }
-
-    torch::Tensor forward(torch::Tensor x) {
-        torch::Tensor residual = x;
-        if(should_apply_shortcut()) {
-            residual = shortcut(x);
-        }
-        x = blocks(x);
-        x += residual;
-        x = torch::relu(x);
-    }
-
-};
-
-struct ResNetResidualBlock : ResidualBlock {
-
-    int expansion;
-    int downsampling;
-    torch::nn::Sequential _shortcut;
-
-    ResNetResidualBlock(int64_t in_planes, int64_t out_planes, int expansion=1, int downsampling=1) :
-        ResidualBlock(in_planes, out_planes), expansion(expansion), downsampling(downsampling),
-        _shortcut(torch::nn::SequentialImpl(
-                Conv3x3(in_planes, out_planes, 1, downsampling, false),
-                torch::nn::BatchNorm(out_planes * expansion)
-                )){
-
-        register_module("shortcut", _shortcut);
-    }
-
-    bool should_apply_shortcut() override {
-        return in_planes != out_planes * expansion;
-    }
-
-    virtual torch::Tensor shortcut(torch::Tensor x) override {
-        return _shortcut->forward(x);
-    }
-
-    int64_t expanded_planes() {
-        return out_planes * expansion;
-    }
-};
-
-struct Relu : torch::nn::Module {
-    Relu() {
-
-    }
-
-    torch::Tensor forward(torch::Tensor x) {
-        return torch::relu(x);
-    }
-};
-
-torch::nn::Sequential conv_bn(int64_t in_planes, int64_t out_planes, bool bias, int64_t stride=1, int64_t kernel_size=3) {
-    return torch::nn::Sequential(
-            Conv3x3(in_planes, out_planes, stride, kernel_size, bias),
-            torch::nn::BatchNorm(out_planes)
-    );
-
-}
-
-struct ResNetBasicBlock : ResNetResidualBlock {
-
-    torch::nn::Sequential _blocks;
-
-    ResNetBasicBlock(int64_t in_planes, int64_t out_planes, int64_t downsampling=1, int64_t expansion=1) :
-        ResNetResidualBlock(in_planes, out_planes, expansion, downsampling),
-        _blocks(torch::nn::Sequential(
-                conv_bn(in_planes, out_planes, false, downsampling),
-                Relu(),
-                conv_bn(out_planes, expanded_planes(), false)
-                )){
-
-    }
-
-
-
-    virtual torch::Tensor blocks(torch::Tensor x) override {
-        return _blocks->forward(x);
-    }
-};
-
-struct ResNetBottleNeckBlock : ResNetResidualBlock {
-
-    torch::nn::Sequential _blocks;
-
-    ResNetBottleNeckBlock(int64_t in_planes, int64_t out_planes) :
-        ResNetResidualBlock(in_planes, out_planes, 4),
-        _blocks(torch::nn::Sequential(
-                conv_bn(in_planes, out_planes, false, 1, 1),
-                Relu(),
-                conv_bn(in_planes, out_planes, false, downsampling, 3),
-                Relu(),
-                conv_bn(in_planes, out_planes, false, 1, 1)
-                )) {
-        register_module("_blocks", _blocks);
-
-    }
-
-    virtual torch::Tensor blocks(torch::Tensor x) {
-        return _blocks->forward(x);
-    }
-};
-
-struct ResNetLayer : torch::nn::Module {
-
-    torch::nn::Sequential _blocks;
-
-    ResNetLayer(int64_t in_planes, int64_t out_planes, int layers=1) :
-        _blocks(torch::nn::Sequential(
-                ResNetBasicBlock(in_planes, out_planes, in_planes == out_planes ? 1 : 2)
-                )) {
-
-        for(int i = 0; i < layers -1 ; i++) {
-            _blocks->push_back(ResNetBasicBlock(out_planes, out_planes, 1));
-        }
-        register_module("_blocks", _blocks);
-
-    }
-
-    torch::Tensor forward(torch::Tensor x) {
-        return _blocks->forward(x);
-    }
-};
-*/
-
 
 
 struct BasicBlock : torch::nn::Module {
@@ -1022,7 +880,7 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
               layer2(_make_layer(256, layers[1], 2)),
               layer3(_make_layer(256, layers[2], 2)),
               layer4(_make_layer(256, layers[3], 2)),
-              fc(256 * Block::expansion, num_classes)
+              fc(768 * Block::expansion, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1039,6 +897,11 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         // Initializing weights
         for(auto m: modules(false)){
             if (m->name() == "torch::nn::Conv2dImpl"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                }
+            }
+            if (m->name() == "torch::nn::Linear"){
                 for (auto p: m->parameters()){
                     torch::nn::init::xavier_normal_(p);
                 }
@@ -1067,16 +930,16 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         x = conv1->forward(x);
         x = bn1->forward(x);
         x = torch::relu(x);
-        x = torch::max_pool2d(x, 3, 1, 1);
+//        x = torch::max_pool2d(x, 3, 1, 1);
 
         x = layer1->forward(x);
         x = layer2->forward(x);
         x = layer3->forward(x);
         x = layer4->forward(x);
 
-        x = torch::avg_pool2d(x, 3, 3, 1);
-        x = x.view({x.sizes()[0], -1});
-        x = fc->forward(x).sigmoid();
+//        x = torch::avg_pool2d(x, 3, 3, 1);
+//        x = x.view({x.sizes()[0], -1});
+        x = fc->forward(x.flatten());
 
         return x;
     }
@@ -1126,7 +989,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
     torch::nn::Linear fc4;
 
     ResNet_dynamics(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(32, 128, 3, 1, 1)),
+            : conv1(conv_options(1, 128, 3, 1, 1)),
               bn1(128),
               layer1(_make_layer(128, layers[0])),
               layer2(_make_layer(256, layers[1], 1)),
@@ -1136,12 +999,12 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
 //              fc1(512 * Block::expansion, 1),
               conv2(conv_options(256, 32,3,3,1)),
               bn2(32),
-              fc1(64 * Block::expansion, 64),
+              fc1(1376 * Block::expansion, 64),
               fc2(64, 1),
               conv3(conv_options(256, 32,3,3,1)),
               bn3(32),
-              fc3(64 * Block::expansion, 64),
-              fc4(64, num_classes),
+              fc3(1376 * Block::expansion, 256),
+              fc4(256, num_classes),
               embedding(torch::nn::Embedding(ACTIONS+1, HIDDEN))
     {
         register_module("conv1", conv1);
@@ -1171,6 +1034,11 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
                     torch::nn::init::xavier_normal_(p);
                 }
             }
+            if (m->name() == "torch::nn::Linear"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                }
+            }
             else if (m->name() == "torch::nn::BatchNormImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
@@ -1184,11 +1052,11 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         }
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action){
+    std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action){
 
         action = embedding(action);
         x = torch::cat({x.reshape({-1, HIDDEN}), action.reshape({-1, HIDDEN})}, 1);
-        x = conv1->forward(x.reshape({-1,32,HIDDEN/32,1}));
+        x = conv1->forward(x.reshape({-1,1,HIDDEN*2,1}));
         x = bn1->forward(x);
         x = torch::relu(x);
         x = torch::max_pool2d(x, 3, 1, 1);
@@ -1267,21 +1135,21 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
     torch::nn::Linear fc4;
 
     ResNet_prediction(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(32, 128, 3, 1, 1)),
+            : conv1(conv_options(1, 128, 3, 1, 1)),
               bn1(128),
               layer1(_make_layer(128, layers[0])),
               layer2(_make_layer(256, layers[1], 1)),
               layer3(_make_layer(256, layers[2], 1)),
               layer4(_make_layer(256, layers[3], 1)),
 //              fc(1024 * Block::expansion, num_classes),
-              conv2(conv_options(256, 32,3,3,1)),
-              bn2(32),
-              fc1(64 * Block::expansion, 64),
-              fc2(64, 1),
-    conv3(conv_options(256, 32,3,3,1)),
-    bn3(32),
-    fc3(64 * Block::expansion, 64),
-    fc4(64, num_classes)
+              conv2(conv_options(256, 128,3,3,1)),
+              bn2(128),
+              fc1(1920 * Block::expansion, 256),
+              fc2(256, 1),
+    conv3(conv_options(256, 128,3,3,1)),
+    bn3(128),
+    fc3(1920 * Block::expansion, 256),
+    fc4(256, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1307,6 +1175,19 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
                     torch::nn::init::xavier_normal_(p);
                 }
             }
+            if (m->name() == "torch::nn::Linear"){
+                for (auto p: m->parameters()){
+                    torch::nn::init::xavier_normal_(p);
+                    for (auto p: m->named_parameters()){
+                        if (p.key() == "weight"){
+                            torch::nn::init::xavier_normal_(*p);
+                        }
+                        else if (p.key() == "bias"){
+                            torch::nn::init::constant_(*p, 0);
+                        }
+                    }
+                }
+            }
             else if (m->name() == "torch::nn::BatchNormImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
@@ -1320,28 +1201,29 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         }
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x){
+    std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor x){
 
-        x = conv1->forward(x.reshape({-1,32,HIDDEN/32,1}));
+        x = x.reshape({-1,1,HIDDEN,1});
+        x = conv1->forward(x);
         x = bn1->forward(x);
         x = torch::relu(x);
-        x = torch::max_pool2d(x, 3, 1, 1);
+//        x = torch::max_pool2d(x, 3, 1, 1);
 
         x = layer1->forward(x);
         x = layer2->forward(x);
         x = layer3->forward(x);
         x = layer4->forward(x);
 
-//        x = torch::avg_pool2d(x, 3, 3, 1);
+        x = torch::avg_pool2d(x, 3, 3, 1);
         torch::Tensor tmp = x;
-        torch::Tensor y = x.view({x.sizes()[0], -1});
+//        torch::Tensor y = x.view({x.sizes()[0], -1});
 
 //        x = fc->forward(y);
-        y = conv2->forward(tmp);
+        torch::Tensor y = conv2->forward(tmp);
         y = bn2->forward(y);
         y = torch::relu(y);
         y = fc1->forward(y.flatten());
-        y = torch::tanh(fc2->forward(y));
+        y = (fc2->forward(y));
 
         x = conv3->forward(tmp);
         x = bn3->forward(x);
@@ -1413,7 +1295,7 @@ struct Prediction : torch::nn::Module {
         network->to(ctx);
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x) {
+    std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor x) {
         return network->forward(x);
     }
 };
@@ -1426,7 +1308,7 @@ struct Dynamics : torch::nn::Module {
         network->to(ctx);
     }
 
-    std::pair<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action) {
+    std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor x, torch::Tensor action) {
         return network->forward(x, action);
     }
 };
@@ -1460,49 +1342,49 @@ struct Network {
     NetworkOutput initial_inference(Image_t &image) {
         torch::Tensor t = torch::tensor(image).to(ctx);
         torch::Tensor hidden_state_tensor = representation->forward(t);
-        std::pair<torch::Tensor, torch::Tensor> prediction_output = prediction->forward(hidden_state_tensor);
+        std::tuple<torch::Tensor, torch::Tensor> prediction_output = prediction->forward(hidden_state_tensor);
         HiddenState_t hidden;
         torch::Tensor pt = hidden_state_tensor.to(get_cpu_ctx());
         for(int i = 0; i < HIDDEN; i++) {
-            hidden.emplace_back(pt[0][i].item<float>());
+            hidden.emplace_back(pt[i].item<float>());
         }
         Policy_t policy;
-        torch::Tensor lt = prediction_output.first.to(get_cpu_ctx());
+        torch::Tensor lt = std::get<0>(prediction_output).to(get_cpu_ctx());
         for(int i = 0; i < ACTIONS; i++) {
             policy.emplace_back(lt[i].item<float>());
         }
-        float  v = prediction_output.second.to(get_cpu_ctx()).item<float>();
+        float  v = std::get<1>(prediction_output).to(get_cpu_ctx()).item<float>();
         assert(!isnan(v));
 //        std::cout << prediction_output.first.size(0) << " " << prediction_output.first.size(1) << std::endl;
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
         return NetworkOutput(v, 0, policy, hidden,
-                             prediction_output.second, torch::tensor({(float)0}).to(ctx)
-                             , prediction_output.first, hidden_state_tensor);
+                             std::get<1>(prediction_output), torch::tensor({(float)0}).to(ctx)
+                             , std::get<0>(prediction_output), hidden_state_tensor);
     }
 
     NetworkOutput recurrent_inference(HiddenState_t hidden_state, Action action) {
-        std::pair<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx),
+        std::tuple<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx),
                                                                                         torch::tensor({(long)action.index}).to(ctx));
-        std::pair<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(hidden_state_tensor.first);
+        std::tuple<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(std::get<0>(hidden_state_tensor));
 
-        torch::Tensor hidden_tensor = hidden_state_tensor.first.to(get_cpu_ctx());
+        torch::Tensor hidden_tensor = std::get<0>(hidden_state_tensor).to(get_cpu_ctx());
         HiddenState_t hidden;
         for(int i = 0; i < HIDDEN; i++) {
             hidden.emplace_back(hidden_tensor[i].item<float>());
         }
         Policy_t policy;
-        torch::Tensor lt = prediction_output.first.to(get_cpu_ctx());
+        torch::Tensor lt = std::get<0>(prediction_output).to(get_cpu_ctx());
         for(int i = 0; i < ACTIONS; i++) {
             policy.emplace_back(lt[i].item<float>());
         }
 
-        float  r = hidden_state_tensor.second.to(get_cpu_ctx()).item<float>();
-        float  v = prediction_output.second.to(get_cpu_ctx()).item<float>();
+        float  r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx()).item<float>();
+        float  v = std::get<1>(prediction_output).to(get_cpu_ctx()).item<float>();
         assert(!isnan(v));
 //        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
         return NetworkOutput(v, r, policy,
                 hidden,
-                prediction_output.second, hidden_state_tensor.second, prediction_output.first, hidden_state_tensor.first);
+                std::get<1>(prediction_output), std::get<1>(hidden_state_tensor), std::get<0>(prediction_output), std::get<0>(hidden_state_tensor));
     }
 
     void zero_grad() {
@@ -1741,14 +1623,16 @@ void run_selfplay(MuZeroConfig config, SharedStorage storage, ReplayBuffer repla
 
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    return torch::nll_loss(torch::log_softmax(input, 1), target, {}, Reduction::Sum, -100);
-//    std::cout << -torch::log_softmax(input,1) << std::endl;
-//    std::cout << input.size(0) << input.size(1) << std::endl;
-    std::cout << input.sizes()  << std::endl;
-    return -(target * torch::log_softmax(input,1)).sum(1).mean();
+//    std::cout << torch::log_softmax(input,1) << std::endl;
+    std::cout << input.sizes() << std::endl;
+//    std::cout << target  << std::endl;
+    torch::Tensor t = torch::softmax(input, 1)/(target+1e-8);
+    return -((target + 1e-8) *torch::log(t)).sum(1).mean();
 }
 
 
 void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx) {
+
     torch::Tensor values_v;
     std::vector<float> target_values_v;
     torch::Tensor rewards_v;
@@ -1756,9 +1640,13 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     torch::Tensor logits_v;
     torch::Tensor target_policies_v;
 
-    for(int i = 0; i < batch.size(); i++) {
-        std::vector<NetworkOutput> predictions;
+    for (int i = 0; i < batch.size(); i++) {
+
+
         network.zero_grad();
+
+        std::vector<NetworkOutput> predictions;
+
         Image_t image = batch[i].image;
         ActionList_t actions = batch[i].action;
         std::vector<Target> targets = batch[i].target;
@@ -1766,13 +1654,15 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
 
         predictions.emplace_back(network_output);
 
+        HiddenState_t hidden_state = network_output.hidden_state;
         for (int j = 0; j < actions.size(); j++) {
-            NetworkOutput network_output_1 = network.recurrent_inference(network_output.hidden_state, actions[j]);
+            NetworkOutput network_output_1 = network.recurrent_inference(hidden_state, actions[j]);
             predictions.emplace_back(network_output_1);
+            hidden_state = network_output_1.hidden_state;
         }
 
 
-        for (int k = 0; k < std::min(predictions.size() - 1, targets.size()); k++) {
+        for (int k = 0; k < std::min(predictions.size()-1, targets.size()); k++) {
             if (i == 0 && k == 0) {
                 values_v = predictions[k].value_tensor;
                 rewards_v = predictions[k].reward_tensor;
@@ -1784,7 +1674,8 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
 //                std::cout << predictions[k].reward_tensor.size(0) << " / " << predictions[k].reward_tensor.size(1) << std::endl;
                 rewards_v = torch::cat({rewards_v, predictions[k].reward_tensor});
                 logits_v = torch::cat({logits_v, predictions[k].policy_tensor});
-                target_policies_v = torch::cat({target_policies_v, torch::tensor(targets[k].policy)});
+                target_policies_v = torch::cat(
+                        {target_policies_v, torch::tensor(targets[k].policy)});
             }
             target_values_v.emplace_back(targets[k].value);
             target_rewards_v.emplace_back(targets[k].reward);
@@ -1793,39 +1684,36 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         }
     }
 
-        torch::Tensor values = values_v.reshape({-1, 1}).to(ctx);
-        torch::Tensor target_values = torch::tensor(target_values_v).reshape({-1, 1}).to(ctx);
-        torch::Tensor rewards = rewards_v.reshape({-1, 1}).to(ctx);
-        torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1, 1}).to(ctx);
-        torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
-        torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
+    torch::Tensor values = values_v.reshape({-1, 1}).to(ctx);
+    torch::Tensor target_values = torch::tensor(target_values_v).reshape({-1, 1}).to(ctx);
+    torch::Tensor rewards = rewards_v.reshape({-1, 1}).to(ctx);
+    torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1, 1}).to(ctx);
+    torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
+    torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
 //        std::cout << logits.size(0) << " / " << logits.size(1) << std::endl;
 //        torch::Tensor target_policies = torch::from_blob(target_policies_v.data(),
 //                {static_cast<long>(target_policies_v.size()), static_cast<long>(target_policies_v[0].size())}).to(ctx);
 //        std::cout << target_policies.size(0) << " / " << target_policies.size(1) << std::endl;
 
-//        std::cout << "values: " <<  values_v << std::endl;
-//        std::cout << "target_values: " << target_values << std::endl;
-//        std::cout << "logits: " << logits << std::endl;
-//        std::cout << "target_policies: " << target_policies << std::endl;
-        torch::Tensor l = torch::mse_loss(values, target_values)
-                 + torch::mse_loss(rewards, target_rewards)
-                + cross_entropy_loss(logits, target_policies);
+        std::cout << "values: " <<  values.sizes() << std::endl;
+    std::cout << "target_values: " << target_values.sizes() << std::endl;
+    std::cout << "logits: " << logits.sizes() << std::endl;
+    std::cout << "target_policies: " << target_policies.sizes() << std::endl;
+    torch::Tensor l = torch::mse_loss(values, target_values)
+                      + torch::mse_loss(rewards, target_rewards)
+                      + cross_entropy_loss(logits, target_policies);
 //                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
 //        if(i == 0) {
 //        l *= 100./logits.size(0);
-            std::cout << "\t\t loss: " << l << std::endl;
+    std::cout << "\t\t loss: " << l << std::endl;
 //        }
 
-        float abc = *((float*)l.to(get_cpu_ctx()).data<float>());
-        assert(!isnan(abc));
-        l.backward({}, false, false);
-        opt.step();
-
+    l.backward();
+    opt.step();
 //    }
 }
 
-void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& replay_buffer, torch::Device ctx) {
+void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer replay_buffer, torch::Device ctx) {
     Network network = storage.latest_network(ctx);
     network._train(true);
     std::vector<torch::Tensor> params({});
@@ -1847,7 +1735,7 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer& r
         std::vector<Batch> batch = replay_buffer.sample_batch(config.num_unroll_steps, config.td_steps);
         update_weights(opt, network, batch, config.weight_decay, ctx);
         network.training_steps++;
-        sleep(10);
+//        sleep(10);
     }
     storage.save_network(config.training_steps, network);
 
@@ -1862,9 +1750,9 @@ Network muzero(MuZeroConfig config) {
     for(int i = 0; i < config.num_actors; i++) {
 //        run_selfplay(config, storage, replay_buffer, i);
         threads.emplace_back(std::make_shared<std::thread>(run_selfplay, config, storage, replay_buffer, i));
-//        th.join();
     }
 
+//    threads[0]->join();
     train_network(config, storage, replay_buffer, get_train_ctx());
 
 
