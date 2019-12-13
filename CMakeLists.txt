@@ -4,7 +4,7 @@ project(muzero)
 list(APPEND CMAKE_PREFIX_PATH "/usr/local/lib64/libtorch-cuda" "/usr/local/lib64/cuda" "abseil-cpp")
 
 find_package(Torch REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system filesystem)
+find_package(Boost REQUIRED COMPONENTS system filesystem program_options)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 include_directories(${Boost_INCLUDE_DIR})
 link_directories(${Boost_LIBRARY_DIR})

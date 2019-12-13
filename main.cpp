@@ -8,6 +8,7 @@
 #include <boost/uuid/uuid_io.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <boost/program_options.hpp>
 #include "random.h"
 
 torch::Device get_ctx() {
@@ -86,7 +87,8 @@ struct MuZeroConfig {
             float lr_init,
             float lr_decay_steps,
             VisitSoftmaxTemperatureFn *visit_softmax_temperature_fn,
-            KnownBounds known_bounds
+            KnownBounds known_bounds,
+            bool train
     ) :
             action_space_size(action_space_size),
             num_actors(num_actors),
@@ -124,7 +126,8 @@ struct MuZeroConfig {
             // Exponential learning rate schedule
             lr_init(lr_init),
             lr_decay_rate(0.1),
-            lr_decay_steps(lr_decay_steps) {
+            lr_decay_steps(lr_decay_steps),
+            train(train) {
 
     }
 
@@ -166,6 +169,7 @@ struct MuZeroConfig {
     float lr_init;
     float lr_decay_rate;
     float lr_decay_steps;
+    bool train;
 
     std::shared_ptr<Game> new_game() {
         return std::make_shared<Game>(action_space_size, discount);
@@ -193,11 +197,12 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             400,
             64,
             max_moves,  //Always use Monte Carlo return.
-            0,
+            2,
             lr_init,
             400e3,
             new VisitSoftmaxTemperatureFn1(),
-            KnownBounds(-1, 1)
+            KnownBounds(-1, 1),
+            false
     };
 }
 
@@ -1752,9 +1757,12 @@ Network muzero(MuZeroConfig config) {
         threads.emplace_back(std::make_shared<std::thread>(run_selfplay, config, storage, replay_buffer, i));
     }
 
-//    threads[0]->join();
-    train_network(config, storage, replay_buffer, get_train_ctx());
 
+    if(config.train)
+        train_network(config, storage, replay_buffer, get_train_ctx());
+
+    for(int i = 0; i < threads.size(); i++)
+        threads[i]->join();
 
     return storage.latest_network(get_train_ctx());
 }
@@ -1763,6 +1771,28 @@ Network muzero(MuZeroConfig config) {
 
 
 int main(int argc, char** argv) {
-    muzero(make_c_config());
+    boost::program_options::options_description desc("Allowed options");
+    desc.add_options()
+    ("help", "produce help")
+            ("train", boost::program_options::value<bool>(), "set train mode")
+            ("workers", boost::program_options::value<int>(), "numer of workers");
+
+    boost::program_options::variables_map vm;
+    boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
+    boost::program_options::notify(vm);
+    MuZeroConfig config = make_c_config();
+
+    if(vm.count("workers")) {
+        config.num_actors = vm["workers"].as<int>();
+    } else {
+        config.num_actors = 0;
+    }
+
+    if(vm.count("train")) {
+        config.train = vm["train"].as<bool>();
+    } else {
+        config.train = false;
+    }
+    muzero(config);
     return 0;
 }
