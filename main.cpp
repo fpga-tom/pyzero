@@ -207,7 +207,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 16, 0.03, 0.01);
+    return make_board_config(ACTIONS, 16, 0.03, 0.00001);
 }
 
 struct Action {
