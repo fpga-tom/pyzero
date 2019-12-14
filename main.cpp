@@ -183,7 +183,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 30)
+            if (num_moves < 2)
                 return 1.0;
             else
                 return 0.0;
@@ -195,7 +195,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             max_moves, 1.0,
             dirichlet_alpha,
             800,
-            32,
+            64,
             max_moves,  //Always use Monte Carlo return.
             2,
             lr_init,
@@ -1477,18 +1477,15 @@ struct SharedStorage {
 };
 
 int softmax_sample(std::vector<float> visit_counts, float temperature) {
-//    std::cout << "t " << temperature << std::endl;
-//    std::vector<float> m;
-//    float mx = *std::max_element(visit_counts.begin(), visit_counts.end());
-//    for(int i = 0;i < visit_counts.size(); i++) {
-//        m.emplace_back(std::exp(visit_counts[i] - mx));
-//    }
-    float counts_sum = std::accumulate(visit_counts.begin(), visit_counts.end(), (float)0.,
-            [temperature](float &a, float &b){return a + b;});
+
+    if( temperature == 0) {
+        return std::max_element(visit_counts.begin(), visit_counts.end()) - visit_counts.begin();
+    }
+    float counts_sum = std::accumulate(visit_counts.begin(), visit_counts.end(), (float) 0.,
+                                       [temperature](float &a, float &b) { return a + std::pow(b, 1./temperature); });
     std::vector<float> d;
-    for(int i = 0;i < visit_counts.size(); i++) {
-        float s = visit_counts[i] / counts_sum;
-//        std::cout << s << " / " << counts_sum << " / " << visit_counts[i] << " / " << m[i] << " / " << mx << std::endl;
+    for (int i = 0; i < visit_counts.size(); i++) {
+        float s = std::pow(visit_counts[i], 1./temperature) / counts_sum;
         d.emplace_back(s);
     }
 
@@ -1497,6 +1494,7 @@ int softmax_sample(std::vector<float> visit_counts, float temperature) {
     std::discrete_distribution<int> distribution(d.begin(), d.end());
 
     return distribution(generator);
+
 }
 
 void add_exploration_noise(MuZeroConfig& config, std::shared_ptr<Node>& node) {
@@ -1636,7 +1634,7 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
 //    std::cout << input[1] << " / " << input[1].max_values(0) << std::endl;
 //    std::cout << input.softmax(1) << std::endl;
-//    std::cout << target << std::endl;
+    std::cout << target << std::endl;
 //    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean(0);
 
     torch::Tensor r = torch::binary_cross_entropy_with_logits(input, target);
@@ -1714,7 +1712,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     std::cout << "target_policies: " << target_policies.sizes() << std::endl;
     torch::Tensor l = torch::mse_loss(values, target_values)
                       + torch::mse_loss(rewards, target_rewards)
-                       + cross_entropy_loss(logits, target_policies);
+                      + cross_entropy_loss(logits, target_policies);
 //                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
 //        if(i == 0) {
 //        l *= 100./logits.size(0);
@@ -1738,8 +1736,8 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer re
     std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
     std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
 
-    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
-    .momentum(config.momentum).weight_decay(config.weight_decay));
+    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
+    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
         std::cout << "\t train step: " << i << std::endl;
@@ -1784,7 +1782,8 @@ int main(int argc, char** argv) {
     desc.add_options()
     ("help", "produce help")
             ("train", boost::program_options::value<bool>(), "set train mode")
-            ("workers", boost::program_options::value<int>(), "numer of workers");
+            ("workers", boost::program_options::value<int>(), "numer of workers")
+            ("lr", boost::program_options::value<float>(), "learning rate");
 
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
@@ -1801,6 +1800,10 @@ int main(int argc, char** argv) {
         config.train = vm["train"].as<bool>();
     } else {
         config.train = false;
+    }
+
+    if(vm.count("lr")) {
+        config.lr_init = vm["lr"].as<float>();
     }
     muzero(config);
     return 0;
