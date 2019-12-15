@@ -183,7 +183,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 3)
+            if (num_moves < 2)
                 return 1.0;
             else
                 return 0.0;
@@ -195,7 +195,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             max_moves, 1.0,
             dirichlet_alpha,
             800,
-            32,
+            128,
             max_moves,  //Always use Monte Carlo return.
             2,
             lr_init,
