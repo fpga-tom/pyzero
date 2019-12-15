@@ -183,7 +183,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 2)
+            if (num_moves < 3)
                 return 1.0;
             else
                 return 0.0;
@@ -195,7 +195,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             max_moves, 1.0,
             dirichlet_alpha,
             800,
-            64,
+            32,
             max_moves,  //Always use Monte Carlo return.
             2,
             lr_init,
@@ -876,24 +876,24 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
     torch::nn::Sequential layer1;
     torch::nn::Sequential layer2;
     torch::nn::Sequential layer3;
-//    torch::nn::Sequential layer4;
+    torch::nn::Sequential layer4;
     torch::nn::Linear fc;
 
     ResNet_representation(torch::IntList layers, int64_t num_classes=1000)
             : conv1(conv_options(16, 128, 3, 1, 1)),
               bn1(128),
               layer1(_make_layer(128, layers[0])),
-              layer2(_make_layer(256, layers[1], 2)),
-              layer3(_make_layer(256, layers[2], 2)),
-//              layer4(_make_layer(256, layers[3], 2)),
-              fc(1024 * Block::expansion, num_classes)
+              layer2(_make_layer(256, layers[1], 1)),
+              layer3(_make_layer(256, layers[2], 1)),
+              layer4(_make_layer(256, layers[3], 2)),
+              fc(4096 * Block::expansion, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
         register_module("layer1", layer1);
         register_module("layer2", layer2);
         register_module("layer3", layer3);
-//        register_module("layer4", layer4);
+        register_module("layer4", layer4);
         register_module("fc", fc);
 
 
@@ -941,7 +941,7 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         x = layer1->forward(x);
         x = layer2->forward(x);
         x = layer3->forward(x);
-//        x = layer4->forward(x);
+        x = layer4->forward(x);
 
 //        x = torch::avg_pool2d(x, 3, 3, 1);
 //        x = x.view({x.sizes()[0], -1});
@@ -1127,7 +1127,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
     torch::nn::Sequential layer1;
     torch::nn::Sequential layer2;
     torch::nn::Sequential layer3;
-//    torch::nn::Sequential layer4;
+    torch::nn::Sequential layer4;
 //    torch::nn::Linear fc;
 
     torch::nn::Conv2d conv2;
@@ -1146,7 +1146,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
               layer1(_make_layer(128, layers[0])),
               layer2(_make_layer(256, layers[1], 1)),
               layer3(_make_layer(256, layers[2], 1)),
-//              layer4(_make_layer(256, layers[3], 1)),
+              layer4(_make_layer(256, layers[3], 1)),
 //              fc(1024 * Block::expansion, num_classes),
               conv2(conv_options(256, 128,3,2,1)),
               bn2(128),
@@ -1162,7 +1162,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         register_module("layer1", layer1);
         register_module("layer2", layer2);
         register_module("layer3", layer3);
-//        register_module("layer4", layer4);
+        register_module("layer4", layer4);
 //        register_module("fc", fc);
         register_module("conv2", conv2);
         register_module("bn2", bn2);
@@ -1215,7 +1215,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = layer1->forward(x);
         x = layer2->forward(x);
         x = layer3->forward(x);
-//        x = layer4->forward(x);
+        x = layer4->forward(x);
 
         x = torch::avg_pool2d(x, 3, 3, 1);
         torch::Tensor tmp = x;
@@ -1232,6 +1232,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = bn3->forward(x);
         x = torch::relu(x);
         x = fc3->forward(x.flatten());
+        x = x.clamp(-10, 10);
 //        x = fc4->forward(x);
 
         return {x, y};
@@ -1631,11 +1632,14 @@ void run_selfplay(MuZeroConfig config, SharedStorage storage, ReplayBuffer repla
 }
 
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
-    std::cout << input.sizes() << std::endl;
+//    std::cout << input[0] << std::endl;
     torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
-    std::cout << target << std::endl;
-    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean(0);
-    std::cout << r << std::endl;
+//    std::cout << "------------- INPUT ---------------" << std::endl;
+//    std::cout << input.softmax(1) << std::endl;
+//    std::cout << "------------- TARGET ---------------" << std::endl;
+//    std::cout << target << std::endl;
+    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
+    std::cout << r.item<float>() << std::endl;
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
 }
@@ -1660,7 +1664,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         std::vector<Target> targets = batch[i].target;
         NetworkOutput network_output = network.initial_inference(image);
 
-        predictions.emplace_back(network_output);
+//        predictions.emplace_back(network_output);
 
         HiddenState_t hidden_state = network_output.hidden_state;
         for (int j = 0; j < actions.size(); j++) {
@@ -1670,7 +1674,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         }
 
 
-        for (int k = 0; k < std::min(predictions.size()-1, targets.size()); k++) {
+        for (int k = 0; k < std::min(predictions.size(), targets.size()); k++) {
             if (i == 0 && k == 0) {
                 values_v = predictions[k].value_tensor;
                 rewards_v = predictions[k].reward_tensor;
@@ -1703,22 +1707,17 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
 //                {static_cast<long>(target_policies_v.size()), static_cast<long>(target_policies_v[0].size())}).to(ctx);
 //        std::cout << target_policies.size(0) << " / " << target_policies.size(1) << std::endl;
 
-        std::cout << "values: " <<  values.sizes() << std::endl;
-    std::cout << "target_values: " << target_values.sizes() << std::endl;
-    std::cout << "logits: " << logits.sizes() << std::endl;
-    std::cout << "target_policies: " << target_policies.sizes() << std::endl;
+//    std::cout << "values: " <<  values.sizes() << std::endl;
+//    std::cout << "target_values: " << target_values.sizes() << std::endl;
+//    std::cout << "logits: " << logits.sizes() << std::endl;
+//    std::cout << "target_policies: " << target_policies.sizes() << std::endl;
     torch::Tensor l = torch::mse_loss(values, target_values)
                       + torch::mse_loss(rewards, target_rewards)
                       + cross_entropy_loss(logits, target_policies);
-//                + torch::poisson_nll_loss(logits, target_policies, false, true, 1e-8, Reduction::Mean);
-//        if(i == 0) {
-//        l *= 100./logits.size(0);
-    std::cout << "\t\t loss: " << l << std::endl;
-//        }
+//    std::cout << "\t\t loss: " << l << std::endl;
 
     l.backward();
     opt.step();
-//    }
 }
 
 void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer replay_buffer, torch::Device ctx) {
@@ -1733,11 +1732,11 @@ void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer re
     std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
     std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
 
-    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
-    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
+    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
+    .momentum(config.momentum).weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
-        std::cout << "\t train step: " << i << std::endl;
+        std::cout << i << "\t";
         if(i != 0 && i % config.checkpoint_interval == 0) {
             storage.save_network(i, network);
         }
