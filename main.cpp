@@ -252,6 +252,7 @@ struct Node {
             children({}),
             hidden_state({}),
             reward(0) {
+        assert(!isnan(prior));
 
     }
 
@@ -1502,6 +1503,7 @@ void add_exploration_noise(MuZeroConfig& config, std::shared_ptr<Node>& node) {
     float frac = config.root_exploration_fraction;
     for(int i = 0;i < node->children.size(); i++) {
         node->children[i]->prior = node->children[i]->prior * (1-frac) + n[i] * frac;
+        assert(!isnan(node->children[i]->prior));
     }
 }
 
@@ -1523,28 +1525,32 @@ void expand_node(std::shared_ptr<Node>& node, Player to_play, ActionList_t actio
     float policy_sum = std::accumulate(network_output.policy_logits.begin(), network_output.policy_logits.end(), (float)0,
             [](float &a, float &b ){ return a + std::exp(b) ;});
     for(int i = 0;i < network_output.policy_logits.size(); i++) {
-        node->children.emplace_back(std::make_shared<Node>(std::exp(network_output.policy_logits[i])/policy_sum));
+        float e = std::exp(network_output.policy_logits[i]);
+        node->children.emplace_back(std::make_shared<Node>(e/policy_sum));
     }
 }
 
 
-float ucb_score(MuZeroConfig& config, std::shared_ptr<Node> parent, std::shared_ptr<Node> child, MinMaxStats& min_max_stats) {
+float ucb_score(MuZeroConfig& config, std::shared_ptr<Node>& parent, std::shared_ptr<Node>& child, MinMaxStats& min_max_stats) {
     float pb_c = std::log(((float)parent->visit_count + config.pb_c_base + 1) /
             config.pb_c_base) + config.pb_c_init;
     pb_c *= std::sqrt((float)parent->visit_count) / ((float)child->visit_count + 1);
 
     float prior_score = pb_c * child->prior;
     float value_score = min_max_stats.normalize(child->value());
+    assert(!isnan(value_score));
+    assert(!isnan(prior_score));
     return prior_score + value_score;
 }
 
-std::pair<Action, std::shared_ptr<Node>> select_child(MuZeroConfig& config, std::shared_ptr<Node> node,
+std::pair<Action, std::shared_ptr<Node>> select_child(MuZeroConfig& config, std::shared_ptr<Node>& node,
         MinMaxStats& min_max_stats) {
     float _ucb_score = -MAXIMUM_FLOAT_VALUE;
     int action = -1;
     std::shared_ptr<Node> child;
     for(int i = 0; i < node->children.size(); i++) {
         float u = ucb_score(config, node, node->children[i], min_max_stats);
+        assert(!isnan(u));
         if (_ucb_score < u) {
             _ucb_score = u;
             action = i;
@@ -1584,6 +1590,7 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
             node = r.second;
         }
 
+        assert(search_path.size() - 2 >= 0);
         std::shared_ptr<Node> parent = search_path[search_path.size() - 2];
         NetworkOutput network_output = network.recurrent_inference(parent->hidden_state, history.last_action());
         expand_node(node, history.to_play(), history.action_space(), network_output);
@@ -1631,13 +1638,13 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    torch::Tensor t = torch::softmax(input, 1)/(target+1e-8);
 //    return -((target + 1e-8) *torch::log(t)).sum(1).mean();
 
-//    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
+    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
 //    std::cout << input[1] << " / " << input[1].max_values(0) << std::endl;
 //    std::cout << input.softmax(1) << std::endl;
     std::cout << target << std::endl;
-//    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean(0);
+    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean(0);
 
-    torch::Tensor r = torch::binary_cross_entropy_with_logits(input, target);
+//    torch::Tensor r = torch::binary_cross_entropy(input.softmax(1), target);
     std::cout << r << std::endl;
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
