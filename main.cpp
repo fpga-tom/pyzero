@@ -1631,20 +1631,10 @@ void run_selfplay(MuZeroConfig config, SharedStorage storage, ReplayBuffer repla
 }
 
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
-//    return torch::nll_loss(torch::log_softmax(input, 1), target, {}, Reduction::Sum, -100);
-//    std::cout << torch::log_softmax(input,1) << std::endl;
     std::cout << input.sizes() << std::endl;
-//    std::cout << target  << std::endl;
-//    torch::Tensor t = torch::softmax(input, 1)/(target+1e-8);
-//    return -((target + 1e-8) *torch::log(t)).sum(1).mean();
-
     torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
-//    std::cout << input[1] << " / " << input[1].max_values(0) << std::endl;
-//    std::cout << input.softmax(1) << std::endl;
     std::cout << target << std::endl;
     torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean(0);
-
-//    torch::Tensor r = torch::binary_cross_entropy(input.softmax(1), target);
     std::cout << r << std::endl;
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
