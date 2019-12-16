@@ -183,7 +183,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 2)
+            if (num_moves < 4)
                 return 1.0;
             else
                 return 0.0;
