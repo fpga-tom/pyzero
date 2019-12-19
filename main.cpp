@@ -34,6 +34,7 @@ typedef std::vector<float> HiddenState_t;
 typedef std::vector<struct Action> ActionList_t;
 typedef std::vector<long> Image_t;
 typedef std::vector<float> Policy_t;
+typedef std::multimap<std::time_t, boost::filesystem::path> result_set_t;
 
 Random rnd(Random::kUniqueSeed, Random::kUniqueStream);
 
@@ -183,7 +184,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 4)
+            if (num_moves < 5)
                 return 1.0;
             else
                 return 0.0;
@@ -646,8 +647,30 @@ struct ReplayBuffer {
     std::vector<Batch> sample_batch(int num_unroll_steps, int td_steps) {
         std::vector<Batch> result;
         std::vector<std::shared_ptr<Game>> games;
+        result_set_t result_set;
+        std::string path = "/home/tomas/CLionProjects/muzero/replay_buffer/";
+        std::vector<std::string> game_files;
+        while(!boost::filesystem::is_directory(path)) {
+            sleep(5);
+        }
+
+
+        while (boost::filesystem::is_empty(path)) {
+            sleep(5);
+        }
+        for(boost::filesystem::directory_iterator it(path); it != boost::filesystem::directory_iterator(); ++it) {
+            if (boost::filesystem::is_regular_file(it->status()) )
+            {
+                result_set.insert(result_set_t::value_type(boost::filesystem::last_write_time(it->path()), *it));
+            }
+        }
+
+        for(auto it = result_set.begin(); it != result_set.end(); ++it) {
+            game_files.emplace_back((*it).second.c_str());
+        }
+
         for(int i = 0; i < batch_size; i++) {
-            games.emplace_back(sample_game(i));
+            games.emplace_back(sample_game(game_files));
         }
 
         std::vector<int> game_pos;
@@ -665,48 +688,12 @@ struct ReplayBuffer {
         return result;
     }
 
-    std::shared_ptr<Game> sample_game(int gid) {
-        std::string path = "/home/tomas/CLionProjects/muzero/replay_buffer/";
-        while(!boost::filesystem::is_directory(path)) {
-            sleep(5);
-        }
+    std::shared_ptr<Game> sample_game(std::vector<std::string>& result_set) {
 
-
-        while (boost::filesystem::is_empty(path)) {
-            sleep(5);
-        }
-
-//        int cnt = std::count_if(
-//        boost::filesystem::directory_iterator(path),
-//        boost::filesystem::directory_iterator(),
-//                static_cast<bool(*)(const boost::filesystem::path&)>(boost::filesystem::is_regular_file) );
-
-        typedef std::multimap<std::time_t, boost::filesystem::path> result_set_t;
-        result_set_t result_set;
-
-//        std::random_device seeder;
-//        std::mt19937 engine(seeder());
-
-
-
-        for(boost::filesystem::directory_iterator it(path); it != boost::filesystem::directory_iterator(); ++it) {
-            if (boost::filesystem::is_regular_file(it->status()) )
-            {
-                result_set.insert(result_set_t::value_type(boost::filesystem::last_write_time(it->path()), *it));
-            }
-        }
-
-        std::uniform_int_distribution<int> dist(0, result_set.size()-1);
+        std::uniform_int_distribution<int> dist(0,result_set.size()-1);
         int guess = dist(engine);
         auto game = std::make_shared<Game>(0, 0);
-        int count = 0;
-        for(auto it = result_set.begin(); it != result_set.end(); ++it) {
-            if(count == guess) {
-                game->load((*it).second.c_str());
-                break;
-            }
-            count++;
-        }
+        game->load(result_set[guess]);
 
         assert(game->action_space_size == ACTIONS);
         assert(game->discount == (float)1.);
@@ -1639,7 +1626,8 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    std::cout << "------------- TARGET ---------------" << std::endl;
 //    std::cout << target << std::endl;
     torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
-    std::cout << r.item<float>() << std::endl;
+    torch::Tensor entropy = -(target * torch::log(target + 1e-8)).sum(1).mean();
+    std::cout << "entropy: " << entropy.item<float>() << " cross_entropy: " << r.item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
 }
@@ -1714,7 +1702,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     torch::Tensor l = torch::mse_loss(values, target_values)
                       + torch::mse_loss(rewards, target_rewards)
                       + cross_entropy_loss(logits, target_policies);
-//    std::cout << "\t\t loss: " << l << std::endl;
+    std::cout << "\t\t loss: " << l.item<float>() << std::endl;
 
     l.backward();
     opt.step();
