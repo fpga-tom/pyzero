@@ -117,7 +117,7 @@ struct MuZeroConfig {
 
             // Training
             training_steps(int(1000e3)),
-            checkpoint_interval(int(10)),
+            checkpoint_interval(int(20)),
             window_size(int(1e6)),
             batch_size(batch_size),
             num_unroll_steps(5),
@@ -198,7 +198,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             max_moves, 1.0,
             dirichlet_alpha,
             800,
-            256,
+            128,
             max_moves,  //Always use Monte Carlo return.
             2,
             lr_init,
@@ -1622,14 +1622,14 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         predictions.emplace_back(network_output);
 
         HiddenState_t hidden_state = network_output.hidden_state;
-        for (int j = 0; j < actions.size(); j++) {
+        for (int j = 0; j < actions.size() - 1 ; j++) {
             NetworkOutput network_output_1 = network.recurrent_inference(hidden_state, actions[j]);
             predictions.emplace_back(network_output_1);
             hidden_state = network_output_1.hidden_state;
         }
 
 
-        for (int k = 0; k < std::min(predictions.size()-1, targets.size()); k++) {
+        for (int k = 0; k < std::min(predictions.size(), targets.size()); k++) {
             if (i == 0 && k == 0) {
                 values_v = predictions[k].value_tensor;
                 rewards_v = predictions[k].reward_tensor;
@@ -1637,16 +1637,12 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
                 target_policies_v = torch::tensor(targets[k].policy);
             } else {
                 values_v = torch::cat({values_v, predictions[k].value_tensor});
-//                std::cout << rewards_v.size(0) << " / " << rewards_v.size(0) << std::endl;
-//                std::cout << predictions[k].reward_tensor.size(0) << " / " << predictions[k].reward_tensor.size(1) << std::endl;
                 rewards_v = torch::cat({rewards_v, predictions[k].reward_tensor});
                 logits_v = torch::cat({logits_v, predictions[k].policy_tensor});
-                target_policies_v = torch::cat(
-                        {target_policies_v, torch::tensor(targets[k].policy)});
+                target_policies_v = torch::cat({target_policies_v, torch::tensor(targets[k].policy)});
             }
             target_values_v.emplace_back(targets[k].value);
             target_rewards_v.emplace_back(targets[k].reward);
-//            target_policies_v.emplace_back(targets[k].policy);
 
         }
     }
@@ -1657,15 +1653,7 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1, 1}).to(ctx);
     torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
     torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
-//        std::cout << logits.size(0) << " / " << logits.size(1) << std::endl;
-//        torch::Tensor target_policies = torch::from_blob(target_policies_v.data(),
-//                {static_cast<long>(target_policies_v.size()), static_cast<long>(target_policies_v[0].size())}).to(ctx);
-//        std::cout << target_policies.size(0) << " / " << target_policies.size(1) << std::endl;
 
-//    std::cout << "values: " <<  values.sizes() << std::endl;
-//    std::cout << "target_values: " << target_values.sizes() << std::endl;
-//    std::cout << "logits: " << logits.sizes() << std::endl;
-//    std::cout << "target_policies: " << target_policies.sizes() << std::endl;
     torch::Tensor l = torch::mse_loss(values, target_values)
                       + torch::mse_loss(rewards, target_rewards)
                       + cross_entropy_loss(logits, target_policies);
@@ -1733,7 +1721,7 @@ int main(int argc, char** argv) {
     desc.add_options()
     ("help", "produce help")
             ("train", boost::program_options::value<bool>(), "set train mode")
-            ("workers", boost::program_options::value<int>(), "numer of workers")
+            ("workers", boost::program_options::value<int>(), "number of workers")
             ("lr", boost::program_options::value<float>(), "learning rate");
 
     boost::program_options::variables_map vm;
