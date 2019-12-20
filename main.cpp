@@ -1417,33 +1417,19 @@ struct Network {
 };
 
 struct SharedStorage {
-    void lock() {
-        while(boost::filesystem::exists("/home/tomas/CLionProjects/muzero/network/lock")) {
-            sleep(1);
-        }
-        boost::filesystem::ofstream("/home/tomas/CLionProjects/muzero/network/lock");
-    }
-    void unlock() {
-        if(boost::filesystem::exists("/home/tomas/CLionProjects/muzero/network/lock")) {
-            boost::filesystem::remove("/home/tomas/CLionProjects/muzero/network/lock");
-        }
-    }
+
     Network latest_network(torch::Device ctx) {
         if (boost::filesystem::is_empty("/home/tomas/CLionProjects/muzero/network")) {
             return make_uniform_network(ctx);
         }
         Network network = make_uniform_network(ctx);
-//        lock();
         network.load_network("/home/tomas/CLionProjects/muzero/network/latest");
-//        unlock();
         network.to(ctx);
         return network;
     }
 
     void save_network(int step, Network& network) {
-//        lock();
         network.save_network("/home/tomas/CLionProjects/muzero/network/latest");
-//        unlock();
     }
 
     Network make_uniform_network(torch::Device& ctx) {
