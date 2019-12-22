@@ -1,17 +1,4 @@
-#include <torch/torch.h>
-#include <torch/script.h>
-#include <iostream>
-#include <random>
-#include <thread>
-#include <boost/uuid/uuid.hpp>
-#include <boost/uuid/random_generator.hpp>
-#include <boost/uuid/uuid_io.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
-#include <boost/program_options.hpp>
-#include <boost/interprocess/sync/file_lock.hpp>
-#include <boost/interprocess/sync/scoped_lock.hpp>
-#include "random.h"
+#include "main.h"
 
 torch::Device get_ctx() {
     return torch::Device("cuda:0");
@@ -22,21 +9,10 @@ torch::Device get_train_ctx() {
 }
 
 torch::Device get_cpu_ctx() {
-    return torch::Device("cpu");
+    return torch::Device("cpu:0");
 }
 
-const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
-const int ACTIONS = 100;
-const int HISTORY = 8;
-const int HIDDEN = 64;
-const std::string PRINTABLE = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c";
 
-typedef std::vector<std::shared_ptr<struct Node>> ChildrenList_t;
-typedef std::vector<float> HiddenState_t;
-typedef std::vector<struct Action> ActionList_t;
-typedef std::vector<long> Image_t;
-typedef std::vector<float> Policy_t;
-typedef std::multimap<std::time_t, boost::filesystem::path> result_set_t;
 
 Random rnd(Random::kUniqueSeed, Random::kUniqueStream);
 
@@ -173,6 +149,7 @@ struct MuZeroConfig {
     float lr_decay_rate;
     float lr_decay_steps;
     bool train;
+    std::string path;
 
     std::shared_ptr<Game> new_game() {
         return std::make_shared<Game>(action_space_size, discount);
@@ -186,7 +163,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 5)
+            if (num_moves < 10)
                 return 1.0;
             else
                 return 0.0;
@@ -197,10 +174,10 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            800,
+            100,
             128,
             max_moves,  //Always use Monte Carlo return.
-            2,
+            1,
             lr_init,
             400e3,
             new VisitSoftmaxTemperatureFn1(),
@@ -213,20 +190,7 @@ MuZeroConfig make_c_config() {
     return make_board_config(ACTIONS, 16, 0.03, 0.00001);
 }
 
-struct Action {
-    int index;
 
-    Action(int index=0) : index(index) {}
-
-    friend std::ofstream& write (std::ofstream &out, const Action& obj) {
-        out.write(reinterpret_cast<const char *>(&obj.index), sizeof(obj.index));
-        return out;
-    }
-
-    friend std::ifstream &read (std::ifstream &in, Action& obj) {
-        in.read(reinterpret_cast<char *>(&obj.index), sizeof(obj.index));
-        return in;
-    }};
 
 struct Player {
     int id;
@@ -590,7 +554,6 @@ struct Game {
     }
 
     void load(const std::string& filename) {
-//        std::cout << filename << std::endl;
         assert(boost::filesystem::is_regular_file(filename));
         std::ifstream in(filename, std::ios::in | std::ios::binary);
         read(in, *this);
@@ -632,8 +595,11 @@ struct ReplayBuffer {
     int window_size;
     int batch_size;
     std::vector<std::shared_ptr<Game>> buffer;
-    ReplayBuffer(MuZeroConfig& config) : window_size(config.window_size), batch_size(config.batch_size),
-        buffer({}) {
+    int batch_idx;
+    std::vector<std::string> game_files;
+    ReplayBuffer(MuZeroConfig& config) : window_size(config.window_size),
+        batch_size(config.batch_size), batch_idx(0),
+        buffer({}), game_files({}) {
     }
 
     void save_game(std::shared_ptr<Game> game) {
@@ -646,12 +612,12 @@ struct ReplayBuffer {
         game->save(boost::uuids::to_string(u));
     }
 
-    std::vector<Batch> sample_batch(int num_unroll_steps, int td_steps) {
-        std::vector<Batch> result;
-        std::vector<std::shared_ptr<Game>> games;
+    void shuffle() {
         result_set_t result_set;
         std::string path = "/home/tomas/CLionProjects/muzero/replay_buffer/";
-        std::vector<std::string> game_files;
+        game_files.clear();
+        batch_idx = 0;
+
         while(!boost::filesystem::is_directory(path)) {
             sleep(5);
         }
@@ -670,6 +636,15 @@ struct ReplayBuffer {
         for(auto it = result_set.begin(); it != result_set.end(); ++it) {
             game_files.emplace_back((*it).second.c_str());
         }
+
+        game_files.erase(game_files.begin(), game_files.begin() + 7000);
+
+        std::random_shuffle(game_files.begin(), game_files.end());
+    }
+
+    std::vector<Batch> sample_batch(int num_unroll_steps, int td_steps) {
+        std::vector<Batch> result;
+        std::vector<std::shared_ptr<Game>> games;
 
         for(int i = 0; i < batch_size; i++) {
             games.emplace_back(sample_game(game_files));
@@ -692,10 +667,12 @@ struct ReplayBuffer {
 
     std::shared_ptr<Game> sample_game(std::vector<std::string>& result_set) {
 
-        std::uniform_int_distribution<int> dist(0,result_set.size() - 1);
-        int guess = dist(engine);
+
         auto game = std::make_shared<Game>(0, 0);
-        game->load(result_set[guess]);
+        if(batch_idx >= result_set.size()) {
+            shuffle();
+        }
+        game->load(result_set[batch_idx++]);
 
         assert(game->action_space_size == ACTIONS);
         assert(game->discount == (float)1.);
@@ -711,26 +688,7 @@ struct ReplayBuffer {
     }
 };
 
-struct NetworkOutput {
-    float value;
-    float reward;
-    Policy_t policy_logits;
-    HiddenState_t hidden_state;
 
-    torch::Tensor value_tensor;
-    torch::Tensor reward_tensor;
-    torch::Tensor policy_tensor;
-    torch::Tensor hidden_tensor;
-
-    NetworkOutput(float value, float reward, Policy_t policy_logits, HiddenState_t hidden_state,
-            torch::Tensor value_tensor, torch::Tensor reward_tensor, torch::Tensor policy_tensor,
-            torch::Tensor hidden_tensor) :
-        value(value), reward(reward), policy_logits(policy_logits), hidden_state(hidden_state),
-        value_tensor(value_tensor), reward_tensor(reward_tensor), policy_tensor(policy_tensor),
-        hidden_tensor(hidden_tensor) {
-
-        }
-};
 torch::nn::Conv1dOptions conv_options(int64_t in_planes, int64_t out_planes, int64_t kerner_size,
                                       int64_t stride=1, int64_t padding=0, bool with_bias=false){
     torch::nn::Conv1dOptions conv_options = torch::nn::Conv1dOptions(in_planes, out_planes, kerner_size);
@@ -859,7 +817,7 @@ const int BottleNeck::expansion = 4;
 
 template <class Block> struct ResNet_representation : torch::nn::Module {
 
-    int64_t inplanes = 128;
+    int64_t inplanes = 64;
     torch::nn::Conv1d conv1;
     torch::nn::BatchNorm bn1;
     torch::nn::Sequential layer1;
@@ -869,13 +827,13 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
     torch::nn::Linear fc;
 
     ResNet_representation(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(HISTORY, 128, 3, 1, 1)),
-              bn1(128),
-              layer1(_make_layer(128, layers[0])),
-              layer2(_make_layer(256, layers[1], 2)),
-              layer3(_make_layer(256, layers[2], 2)),
-              layer4(_make_layer(256, layers[3], 2)),
-              fc(2048 * Block::expansion, num_classes)
+            : conv1(conv_options(HISTORY, 64, 3, 1, 1)),
+              bn1(64),
+              layer1(_make_layer(64, layers[0])),
+              layer2(_make_layer(128, layers[1], 2)),
+              layer3(_make_layer(128, layers[2], 2)),
+              layer4(_make_layer(128, layers[3], 2)),
+              fc(1024 * Block::expansion, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -933,8 +891,8 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         x = layer4->forward(x);
 
 //        x = torch::avg_pool2d(x, 3, 3, 1);
-//        x = x.view({x.sizes()[0], -1});
-        x = fc->forward(x.flatten());
+        x = x.view({x.sizes()[0], -1});
+        x = fc->forward(x);
 
         return x;
     }
@@ -962,7 +920,7 @@ private:
 
 template <class Block> struct ResNet_dynamics : torch::nn::Module {
 
-    int64_t inplanes = 128;
+    int64_t inplanes = 64;
     torch::nn::Conv1d conv1;
     torch::nn::BatchNorm bn1;
     torch::nn::Sequential layer1;
@@ -976,30 +934,30 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
     torch::nn::Conv1d conv2;
     torch::nn::BatchNorm bn2;
     torch::nn::Linear fc1;
-    torch::nn::Linear fc2;
+//    torch::nn::Linear fc2;
 
     torch::nn::Conv1d conv3;
     torch::nn::BatchNorm bn3;
     torch::nn::Linear fc3;
-    torch::nn::Linear fc4;
+//    torch::nn::Linear fc4;
 
     ResNet_dynamics(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(1, 128, 3, 1, 1)),
-              bn1(128),
-              layer1(_make_layer(128, layers[0])),
-              layer2(_make_layer(256, layers[1], 1)),
-              layer3(_make_layer(256, layers[2], 1)),
-              layer4(_make_layer(256, layers[3], 1)),
+            : conv1(conv_options(1, 64, 3, 1, 1)),
+              bn1(64),
+              layer1(_make_layer(64, layers[0])),
+              layer2(_make_layer(128, layers[1], 1)),
+              layer3(_make_layer(128, layers[2], 1)),
+              layer4(_make_layer(128, layers[3], 1)),
 //              fc(512 * Block::expansion, num_classes),
 //              fc1(512 * Block::expansion, 1),
-              conv2(conv_options(256, 32,3,3,1)),
-              bn2(32),
-              fc1(1376 * Block::expansion, 64),
-              fc2(64, 1),
-              conv3(conv_options(256, 32,3,3,1)),
-              bn3(32),
-              fc3(1376 * Block::expansion, 256),
-              fc4(256, num_classes),
+              conv2(conv_options(128, 1,3,3,1)),
+              bn2(1),
+              fc1(43 * Block::expansion, 1),
+//              fc2(64, 1),
+              conv3(conv_options(128, 1,3,3,1)),
+              bn3(1),
+              fc3(43 * Block::expansion, num_classes),
+//              fc4(256, num_classes),
               embedding(torch::nn::Embedding(ACTIONS+1, HIDDEN))
     {
         register_module("conv1", conv1);
@@ -1015,12 +973,12 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         register_module("conv2", conv2);
         register_module("bn2", bn2);
         register_module("fc1", fc1);
-        register_module("fc2", fc2);
+//        register_module("fc2", fc2);
 
         register_module("conv3", conv3);
         register_module("bn3", bn3);
         register_module("fc3", fc3);
-        register_module("fc4", fc4);
+//        register_module("fc4", fc4);
 
         // Initializing weights
         for(auto m: this->modules(false)){
@@ -1075,14 +1033,14 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         y = conv2->forward(tmp);
         y = bn2->forward(y);
         y = torch::relu(y);
-        y = fc1->forward(y.flatten());
-        y = torch::tanh(fc2->forward(y));
+        y = fc1->forward(y);
+//        y = torch::tanh(fc2->forward(y));
 
         x = conv3->forward(tmp);
         x = bn3->forward(x);
         x = torch::relu(x);
-        x = fc3->forward(x.flatten());
-        x = fc4->forward(x);
+        x = fc3->forward(x);
+//        x = fc4->forward(x);
 
         return {x,y};
     }
@@ -1110,7 +1068,7 @@ private:
 
 template <class Block> struct ResNet_prediction : torch::nn::Module {
 
-    int64_t inplanes = 128;
+    int64_t inplanes = 64;
     torch::nn::Conv1d conv1;
     torch::nn::BatchNorm bn1;
     torch::nn::Sequential layer1;
@@ -1130,20 +1088,20 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 //    torch::nn::Linear fc4;
 
     ResNet_prediction(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(1, 128, 3, 1, 1)),
-              bn1(128),
-              layer1(_make_layer(128, layers[0])),
-              layer2(_make_layer(256, layers[1], 1)),
-              layer3(_make_layer(256, layers[2], 1)),
-              layer4(_make_layer(256, layers[3], 1)),
+            : conv1(conv_options(1, 64, 3, 1, 1)),
+              bn1(64),
+              layer1(_make_layer(64, layers[0])),
+              layer2(_make_layer(128, layers[1], 1)),
+              layer3(_make_layer(128, layers[2], 1)),
+              layer4(_make_layer(128, layers[3], 1)),
 //              fc(1024 * Block::expansion, num_classes),
-              conv2(conv_options(86, 128,3,2,1)),
-              bn2(128),
-              fc1(1408 * Block::expansion, 128),
+              conv2(conv_options(43, 1,3,2,1)),
+              bn2(1),
+              fc1(11 * Block::expansion, 128),
               fc2(128, 1),
-    conv3(conv_options(86, 128,3,2,1)),
-    bn3(128),
-    fc3(1408 * Block::expansion, num_classes)
+    conv3(conv_options(43, 1,3,2,1)),
+    bn3(1),
+    fc3(11 * Block::expansion, num_classes)
 //    fc4(128, num_classes)
     {
         register_module("conv1", conv1);
@@ -1180,50 +1138,61 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
                     }
                 }
             }
-//            else if (m->name() == "torch::nn::BatchNormImpl"){
-//                for (auto p: m->named_parameters()){
-//                    if (p.key() == "weight"){
-//                        torch::nn::init::constant_(*p, 1);
-//                    }
-//                    else if (p.key() == "bias"){
-//                        torch::nn::init::constant_(*p, 0);
-//                    }
-//                }
-//            }
+            else if (m->name() == "torch::nn::BatchNormImpl"){
+                for (auto p: m->named_parameters()){
+                    if (p.key() == "weight"){
+                        torch::nn::init::constant_(*p, 1);
+                    }
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
+                    }
+                }
+            }
         }
     }
 
     std::tuple<torch::Tensor, torch::Tensor> forward(torch::Tensor x){
 
-        x = x.view({-1,1, HIDDEN});
+        x = x.view({-1, 1, HIDDEN});
+        DUMP_LOG(x.sizes());
         x = conv1->forward(x);
         x = bn1->forward(x);
         x = torch::relu(x);
+        DUMP_LOG(x.sizes());
 //        x = torch::max_pool2d(x, 3, 1, 1);
 
         x = layer1->forward(x);
+        DUMP_LOG(x.sizes());
         x = layer2->forward(x);
+        DUMP_LOG(x.sizes());
         x = layer3->forward(x);
+        DUMP_LOG(x.sizes());
         x = layer4->forward(x);
+        DUMP_LOG(x.sizes());
 
         x = torch::avg_pool2d(x, 3, 3, 1);
         torch::Tensor tmp = x;
+        DUMP_LOG(x.sizes());
 //        torch::Tensor y = x.view({x.sizes()[0], -1});
 
 //        x = fc->forward(y);
         torch::Tensor y = conv2->forward(tmp);
+        DUMP_LOG(y.sizes());
         y = bn2->forward(y);
+        DUMP_LOG(y.sizes());
 //        y = torch::relu(y);
-        y = torch::relu(fc1->forward(y.flatten()));
-        y = torch::tanh(fc2->forward(y));
+        y = torch::relu(fc1->forward(y));
+        y = fc2->forward(y);
 
         x = conv3->forward(tmp);
         x = bn3->forward(x);
         x = torch::relu(x);
-        x = fc3->forward(x.flatten());
+        x = fc3->forward(x);
         x = x.clamp(-10, 10);
 //        x = fc4->forward(x);
 
+        DUMP_LOG(x.sizes());
+        DUMP_LOG(y.sizes());
         return {x, y};
     }
 
@@ -1306,24 +1275,45 @@ struct Dynamics : torch::nn::Module {
     }
 };
 
-struct Network {
+struct Network : Network_i {
     torch::Device ctx;
     std::shared_ptr<Representation> representation;
     std::shared_ptr<Dynamics> dynamics;
     std::shared_ptr<Prediction> prediction;
 
-    int training_steps;
+    int _training_steps;
 
     Network(torch::Device ctx, bool train=false) : ctx(ctx), representation(std::make_shared<Representation>(ctx)),
-        dynamics(std::make_shared<Dynamics>(ctx)), prediction(std::make_shared<Prediction>(ctx)), training_steps(0) {
+        dynamics(std::make_shared<Dynamics>(ctx)), prediction(std::make_shared<Prediction>(ctx)), _training_steps(0) {
         to(ctx);
         _train(train);
     }
 
-    void _train(bool train) {
+    std::vector<torch::Tensor> parameters() override {
+        std::vector<torch::Tensor> params({});
+        std::vector<torch::Tensor> r_params = representation->parameters();
+        std::vector<torch::Tensor> d_params = dynamics->parameters();
+        std::vector<torch::Tensor> p_params = prediction->parameters();
+
+        std::copy(r_params.begin(), r_params.end(), std::back_inserter(params));
+        std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
+        std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
+
+        return params;
+    }
+
+    void _train(bool train) override {
         representation->train(train);
         dynamics->train(train);
         prediction->train(train);
+    }
+
+    int training_steps() override {
+        return _training_steps;
+    }
+
+    int inc_trainint_steps() override {
+        return _training_steps++;
     }
 
     void to(torch::Device& ctx) {
@@ -1332,57 +1322,74 @@ struct Network {
         prediction->to(ctx);
     }
 
-    NetworkOutput initial_inference(Image_t &image) {
-        torch::Tensor t = torch::tensor(image).to(ctx);
-        torch::Tensor hidden_state_tensor = representation->forward(t);
+    batch_out_t initial_inference(batch_in_t batch) override {
+        torch::Tensor hidden_state_tensor = representation->forward(batch.batch.to(ctx));
+        DUMP_LOG(hidden_state_tensor.sizes());
         std::tuple<torch::Tensor, torch::Tensor> prediction_output = prediction->forward(hidden_state_tensor);
-        HiddenState_t hidden;
+
         torch::Tensor pt = hidden_state_tensor.to(get_cpu_ctx());
-//        std::cout << std::get<0>(prediction_output).argmax(0) << std::endl;
-        for(int i = 0; i < HIDDEN; i++) {
-            hidden.emplace_back(pt[i].item<float>());
-        }
-        Policy_t policy;
+        DUMP_LOG(pt.sizes())
+
         torch::Tensor lt = std::get<0>(prediction_output).to(get_cpu_ctx());
-        for(int i = 0; i < ACTIONS; i++) {
-            policy.emplace_back(lt[i].item<float>());
+        DUMP_LOG(lt.sizes())
+
+        batch_out_t ret;
+        ret.out = {};
+        for(int id = 0; id < batch.out.size(); id++) {
+            HiddenState_t hidden;
+
+            for (int i = 0; i < HIDDEN; i++) {
+                hidden.emplace_back(pt[id][i].item<float>());
+            }
+            Policy_t policy;
+
+            for (int i = 0; i < ACTIONS; i++) {
+                policy.emplace_back(lt[id][0][i].item<float>());
+            }
+            float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
+            assert(!isnan(v));
+            ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden,
+                                 std::get<1>(prediction_output), torch::tensor({(float) 0}).to(ctx),
+                                 std::get<0>(prediction_output), hidden_state_tensor));
         }
-        float  v = std::get<1>(prediction_output).to(get_cpu_ctx()).item<float>();
-        assert(!isnan(v));
-//        std::cout << prediction_output.first.size(0) << " " << prediction_output.first.size(1) << std::endl;
-//        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
-        return NetworkOutput(v, 0, policy, hidden,
-                             std::get<1>(prediction_output), torch::tensor({(float)0}).to(ctx)
-                             , std::get<0>(prediction_output), hidden_state_tensor);
+        return ret;
     }
 
-    NetworkOutput recurrent_inference(HiddenState_t hidden_state, Action action) {
-        std::tuple<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(torch::tensor(hidden_state).to(ctx),
-                                                                                        torch::tensor({(long)action.index}).to(ctx));
+    batch_out_t recurrent_inference(batch_in_t batch) override {
+        std::tuple<torch::Tensor, torch::Tensor> hidden_state_tensor = dynamics->forward(batch.batch.to(ctx),
+                                                                                        torch::tensor(batch.actions).to(ctx));
         std::tuple<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(std::get<0>(hidden_state_tensor));
 
         torch::Tensor hidden_tensor = std::get<0>(hidden_state_tensor).to(get_cpu_ctx());
-        HiddenState_t hidden;
-        for(int i = 0; i < HIDDEN; i++) {
-            hidden.emplace_back(hidden_tensor[i].item<float>());
-        }
-        Policy_t policy;
+        DUMP_LOG(hidden_tensor.sizes())
         torch::Tensor lt = std::get<0>(prediction_output).to(get_cpu_ctx());
-        for(int i = 0; i < ACTIONS; i++) {
-            policy.emplace_back(lt[i].item<float>());
-        }
+        DUMP_LOG(lt.sizes());
+        batch_out_t ret;
+        ret.out = {};
+        for(int id = 0; id < batch.out.size(); id++) {
+            HiddenState_t hidden;
+            for (int i = 0; i < HIDDEN; i++) {
+                hidden.emplace_back(hidden_tensor[id][0][i].item<float>());
+            }
+            Policy_t policy;
 
-        float  r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx()).item<float>();
-        float  v = std::get<1>(prediction_output).to(get_cpu_ctx()).item<float>();
-        assert(!isnan(v));
-//        std::cout << hidden_state_tensor.size(0) << " " << hidden_state_tensor.size(1) << std::endl;
-        return NetworkOutput(v, r, policy,
-                hidden,
-                std::get<1>(prediction_output), std::get<1>(hidden_state_tensor),
-                        std::get<0>(prediction_output), std::get<0>(hidden_state_tensor));
+            for (int i = 0; i < ACTIONS; i++) {
+                policy.emplace_back(lt[id][0][i].item<float>());
+            }
+
+            float r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx())[id].item<float>();
+            float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
+            assert(!isnan(v));
+            ret.out.emplace_back( NetworkOutput(v, r, policy,
+                                 hidden,
+                                 std::get<1>(prediction_output), std::get<1>(hidden_state_tensor),
+                                 std::get<0>(prediction_output), std::get<0>(hidden_state_tensor)));
+        }
+        return ret;
+
     }
 
-    void zero_grad() {
+    void zero_grad() override {
         representation->zero_grad();
         dynamics->zero_grad();
         prediction->zero_grad();
@@ -1397,7 +1404,7 @@ struct Network {
 
     }
 
-    void save_network(std::string filename) {
+    void save_network(int step, std::string filename) override {
         _save(filename + ".r.ckpt", representation);
         _save(filename + ".d.ckpt", dynamics);
         _save(filename + ".p.ckpt", prediction);
@@ -1416,24 +1423,253 @@ struct Network {
     }
 };
 
-struct SharedStorage {
 
-    Network latest_network(torch::Device ctx) {
-        if (boost::filesystem::is_empty("/home/tomas/CLionProjects/muzero/network")) {
+struct SingleInference : Inference_i {
+
+    std::shared_ptr<batch_queue_in_t>& initial_queue_write;
+    std::shared_ptr<batch_queue_in_t>& recurent_queue_write;
+
+    std::shared_ptr<batch_queue_out_t> initial_queue_read;
+    std::shared_ptr<batch_queue_out_t> recurent_queue_read;
+
+    SingleInference(
+            std::shared_ptr<batch_queue_in_t>& initial_queue_write,
+            std::shared_ptr<batch_queue_in_t>& recurent_queue_write
+            ) :
+            initial_queue_write(initial_queue_write),
+            recurent_queue_write(recurent_queue_write),
+            initial_queue_read(std::make_shared<batch_queue_out_t>(1)),
+            recurent_queue_read(std::make_shared<batch_queue_out_t>(1)) {
+    }
+
+    batch_out_t initial_inference(batch_in_t batch) override {
+        batch.out = {};
+        batch.out.emplace_back(initial_queue_read);
+        initial_queue_write->enqueue(batch);
+        return initial_queue_read->dequeue();
+    }
+
+    batch_out_t recurrent_inference(batch_in_t batch) override {
+        batch.out = {};
+        batch.out.emplace_back(recurent_queue_read);
+        recurent_queue_write->enqueue(batch);
+        return recurent_queue_read->dequeue();
+    }
+};
+
+
+struct BatchInference : Inference_i {
+    std::shared_ptr<batch_queue_in_t> initial_queue_read;
+    std::shared_ptr<batch_queue_in_t> recurrent_queue_read;
+
+    std::shared_ptr<Network_i> inference;
+    std::vector<batch_in_t> initial_batches;
+    std::vector<batch_in_t> recurrent_batches;
+    int batch_size;
+
+    std::atomic_bool run;
+
+    std::shared_ptr<std::thread> i_thread, r_thread;
+
+    BatchInference(std::shared_ptr<Network_i> inference, int batch_size) : inference(inference),
+                                                                              batch_size(batch_size),
+                                                                              run(true),
+                                                                              initial_queue_read(
+                                                                                      std::make_shared<batch_queue_in_t>(
+                                                                                              batch_size)),
+                                                                              recurrent_queue_read(
+                                                                                      std::make_shared<batch_queue_in_t>(
+                                                                                              batch_size)),
+                                                                                              initial_batches({}),
+                                                                                              recurrent_batches({}){
+
+        i_thread = std::make_shared<std::thread>([this](){initial_thread();});
+        r_thread = std::make_shared<std::thread>([this](){recurrent_thread();});
+        DUMP_LOG(batch_size)
+    }
+
+    virtual ~BatchInference() {
+        i_thread->join();
+        r_thread->join();
+    }
+
+    void initial_thread() {
+        DUMP_LOG(batch_size)
+        while (run) {
+                batch_in_t b = initial_queue_read->dequeue();
+                initial_batches.emplace_back(b);
+
+
+                if(initial_batches.size() == batch_size) {
+                    batch_in_t batch_in = merge_batch(initial_batches);
+                    batch_out_t batch_out = initial_inference(batch_in);
+                    distill_batch(batch_in,batch_out);
+                    initial_batches.clear();
+                }
+        }
+    }
+
+    void recurrent_thread() {
+        DUMP_LOG(batch_size)
+            while (run) {
+                batch_in_t b = recurrent_queue_read->dequeue();
+                recurrent_batches.emplace_back(b);
+
+                if (recurrent_batches.size() == batch_size) {
+                    batch_in_t batch_in = merge_batch(recurrent_batches);
+                    batch_out_t batch_out = recurrent_inference(batch_in);
+                    distill_batch(batch_in, batch_out);
+                    recurrent_batches.clear();
+                }
+            }
+    }
+
+    batch_in_t merge_batch(std::vector<batch_in_t>& batch) {
+        batch_in_t ret;
+        ret.out = {};
+        ret.actions = {};
+        ret.out.emplace_back(batch[0].out[0]);
+        if(batch[0].actions.size() > 0)
+            ret.actions.emplace_back(batch[0].actions[0]);
+        torch::Tensor t = batch[0].batch;
+        for(int i = 1; i < batch.size(); i++) {
+            t = torch::cat({t, batch[i].batch});
+            ret.out.emplace_back(batch[i].out[0]);
+            if(batch[i].actions.size() > 0)
+                ret.actions.emplace_back(batch[i].actions[0]);
+        }
+        ret.batch = t;
+        return ret;
+    }
+
+    void distill_batch(batch_in_t& batch_in, batch_out_t& batch_out) {
+        for(int i = 0; i < batch_in.out.size(); i++) {
+            batch_out_t b;
+            b.out = {};
+            b.out.emplace_back(batch_out.out[i]);
+            batch_in.out[i]->enqueue(b);
+        }
+    }
+
+
+    batch_out_t initial_inference(batch_in_t batch) override {
+        return inference->initial_inference(batch);
+    }
+
+    batch_out_t recurrent_inference(batch_in_t batch) override {
+        return inference->recurrent_inference(batch);
+    }
+
+};
+
+
+struct SingleInferenceWrapper : Network_i {
+    std::shared_ptr<SingleInference> single_inference;
+    std::shared_ptr<Network_i> network;
+
+    SingleInferenceWrapper(std::shared_ptr<SingleInference> single_inference, std::shared_ptr<Network_i> network) :
+        single_inference(single_inference),
+        network(network) {
+
+    }
+
+    batch_out_t initial_inference(batch_in_t batch) override {
+        return single_inference->initial_inference(batch);
+    }
+
+    batch_out_t recurrent_inference(batch_in_t batch) override {
+        return single_inference->recurrent_inference(batch);
+    }
+
+    void save_network(int step, std::string path) override {
+        network->save_network(step, path);
+    }
+
+    void load_network(std::string path) override {
+        network->load_network(path);
+    }
+
+    int training_steps() override {
+        return network->training_steps();
+    }
+
+    void _train(bool t) override {
+        network->_train(t);
+    }
+
+    std::vector<torch::Tensor> parameters() override {
+        return network->parameters();
+    }
+
+    void zero_grad() override {
+        network->zero_grad();
+    }
+
+    int inc_trainint_steps() override {
+        return network->inc_trainint_steps();
+    }
+};
+
+
+struct BatchSharedStorage : SharedStorage_i {
+
+    const std::string path;
+
+    BatchSharedStorage(const MuZeroConfig &config) : path(config.path) {
+
+    }
+
+    std::shared_ptr<Network_i> latest_network(torch::Device ctx) override {
+        if (boost::filesystem::is_empty(path + "/network")) {
             return make_uniform_network(ctx);
         }
-        Network network = make_uniform_network(ctx);
-        network.load_network("/home/tomas/CLionProjects/muzero/network/latest");
-        network.to(ctx);
+        std::shared_ptr<Network_i> network = make_uniform_network(ctx);
+        network->load_network(path + "/network/latest");
         return network;
     }
 
-    void save_network(int step, Network& network) {
-        network.save_network("/home/tomas/CLionProjects/muzero/network/latest");
+    void save_network(int step, std::shared_ptr<Network_i>& network) override {
+        network->save_network(step, path + "/network/latest");
     }
 
-    Network make_uniform_network(torch::Device& ctx) {
-        return Network(ctx);
+    std::shared_ptr<Network_i> make_uniform_network(torch::Device& ctx) {
+        return std::make_shared<Network>(ctx);
+    }
+};
+
+struct SingleSharedStorage : SharedStorage_i {
+    std::shared_ptr<SharedStorage_i> shared_storage;
+    std::vector<std::shared_ptr<BatchInference>> batch_inference;
+    int batch_size;
+    int loop_counter;
+    int batch_inference_count;
+
+    SingleSharedStorage(std::shared_ptr<SharedStorage_i> shared_storage, int batch_size, torch::Device ctx, int batch_inference_count) :
+        shared_storage(shared_storage),
+                                                           batch_inference({}), batch_inference_count(batch_inference_count),
+                                                           batch_size(batch_size), loop_counter(0) {
+
+        if(batch_inference.size() == 0) {
+            for(int i = 0; i < batch_inference_count; i++) {
+                std::shared_ptr<Network_i> network = shared_storage->latest_network(ctx);
+                std::shared_ptr<BatchInference> batch_inference_i = std::make_shared<BatchInference>(network, batch_size);
+                batch_inference.emplace_back(batch_inference_i);
+            }
+        }
+
+    }
+
+    std::shared_ptr<Network_i> latest_network(torch::Device ctx) override {
+        std::shared_ptr<SingleInference> single_inference = std::make_shared<SingleInference>(batch_inference[loop_counter]->initial_queue_read,
+                batch_inference[loop_counter]->recurrent_queue_read);
+        std::shared_ptr<Network_i> ret = std::make_shared<SingleInferenceWrapper>(single_inference, batch_inference[loop_counter]->inference);
+        loop_counter++;
+        loop_counter %= batch_inference_count;
+        return ret;
+    }
+
+    void save_network(int step, std::shared_ptr<Network_i>& network) override {
+        shared_storage->save_network(step, network);
     }
 };
 
@@ -1478,7 +1714,7 @@ void backpropagate(std::vector<std::shared_ptr<Node>> &search_path, float value,
     }
 }
 
-void expand_node(std::shared_ptr<Node>& node, Player to_play, ActionList_t actions, NetworkOutput network_output) {
+void expand_node(std::shared_ptr<Node>& node, Player to_play, ActionList_t actions, NetworkOutput& network_output) {
     node->to_play = to_play.id;
     node->hidden_state = network_output.hidden_state;
     node->reward = network_output.reward;
@@ -1522,18 +1758,18 @@ std::pair<Action, std::shared_ptr<Node>> select_child(MuZeroConfig& config, std:
     return {Action(action), child};
 }
 
-Action select_action(MuZeroConfig& config, int num_moves, std::shared_ptr<Node>& node, Network& network) {
+Action select_action(MuZeroConfig& config, int num_moves, std::shared_ptr<Node>& node, std::shared_ptr<Network_i>& network) {
     std::vector<float> visit_counts;
     for(int i = 0;i < node->children.size(); i++) {
         visit_counts.emplace_back(node->children[i]->visit_count);
     }
-    float t = config.visit_softmax_temperature_fn->operator()(num_moves, network.training_steps);
+    float t = config.visit_softmax_temperature_fn->operator()(num_moves, network->training_steps());
     int action = softmax_sample(visit_counts, t);
     return Action(action);
 
 }
 
-void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory action_history, Network& network) {
+void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory action_history, std::shared_ptr<Network_i>& network) {
     MinMaxStats min_max_stats(config.known_bounds);
 
 
@@ -1552,7 +1788,8 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
 
         assert(search_path.size() - 2 >= 0);
         std::shared_ptr<Node> parent = search_path[search_path.size() - 2];
-        NetworkOutput network_output = network.recurrent_inference(parent->hidden_state, history.last_action());
+        batch_out_t batch_out = network->recurrent_inference(batch_in_s::make_batch(parent->hidden_state, history.last_action()));
+        NetworkOutput network_output = batch_out.network_output();
         expand_node(node, history.to_play(), history.action_space(), network_output);
 
         backpropagate(search_path, network_output.value, history.to_play(), config.discount, min_max_stats);
@@ -1560,18 +1797,18 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
     }
 }
 
-std::shared_ptr<Game> play_game(MuZeroConfig& config, Network& network) {
+std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i> network) {
     std::shared_ptr<Game> game = config.new_game();
 
     int count = 0;
     while(!game->terminal() && game->history.size() < config.max_moves) {
         std::shared_ptr<Node> root(std::make_shared<Node>(0));
         Image_t current_observation = game->make_image(-1);
-        expand_node(root, game->to_play(), game->legal_actions(),
-                network.initial_inference(current_observation));
+        NetworkOutput no = network->initial_inference(batch_in_s::make_batch(current_observation)).network_output();
+        expand_node(root, game->to_play(), game->legal_actions(), no);
         add_exploration_noise(config, root);
 
-        std::cout << "run_mcts " << count << std::endl;
+//        std::cout << "run_mcts " << count << std::endl;
         count++;
         run_mcts(config, root, game->action_history(), network);
         Action action = select_action(config, game->history.size(), root, network);
@@ -1582,25 +1819,26 @@ std::shared_ptr<Game> play_game(MuZeroConfig& config, Network& network) {
     return game;
 }
 
-void run_selfplay(MuZeroConfig config, SharedStorage storage, ReplayBuffer replay_buffer, int tid) {
+void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage, ReplayBuffer replay_buffer, int tid) {
+
     for(;;) {
-        Network network = storage.latest_network(get_ctx());
+        std::shared_ptr<Network_i> network = storage->latest_network(get_ctx());
         std::shared_ptr<Game> game = play_game(config, network);
         replay_buffer.save_game(game);
     }
 }
 
-torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
+torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, torch::Tensor scale) {
     torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
-    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
-    torch::Tensor entropy = -(target * torch::log(target + 1e-8)).sum(1).mean();
-    std::cout << "entropy: " << entropy.item<float>() << " cross_entropy: " << r.item<float>();
+    torch::Tensor r = -((target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1) * scale).mean();
+    torch::Tensor entropy = -((target * torch::log(target + 1e-8)).sum(1) * scale).mean();
+    std::cout << "entropy: " << entropy.item<float>() << " weighted_cross_entropy: " << r.item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
 }
 
 
-void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx) {
+void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx) {
 
     torch::Tensor values_v;
     std::vector<float> target_values_v;
@@ -1608,8 +1846,9 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     std::vector<float> target_rewards_v;
     torch::Tensor logits_v;
     torch::Tensor target_policies_v;
+    torch::Tensor scale_v;
 
-    network.zero_grad();
+    network->zero_grad();
     for (int i = 0; i < batch.size(); i++) {
 
         std::vector<NetworkOutput> predictions;
@@ -1617,28 +1856,35 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
         Image_t image = batch[i].image;
         ActionList_t actions = batch[i].action;
         std::vector<Target> targets = batch[i].target;
-        NetworkOutput network_output = network.initial_inference(image);
+        NetworkOutput network_output = network->initial_inference(batch_in_s::make_batch(image)).network_output();
 
         predictions.emplace_back(network_output);
+        if(i == 0) {
+            scale_v = torch::tensor((float)1);
+        } else {
+            scale_v = torch::cat({scale_v, torch::tensor((float)1)});
+        }
+
 
         HiddenState_t hidden_state = network_output.hidden_state;
-        for (int j = 0; j < actions.size() - 1 ; j++) {
-            NetworkOutput network_output_1 = network.recurrent_inference(hidden_state, actions[j]);
+        for (int j = 0; j < actions.size() - 1; j++) {
+            NetworkOutput network_output_1 = network->recurrent_inference(batch_in_s::make_batch(hidden_state, actions[j])).network_output();
             predictions.emplace_back(network_output_1);
+            scale_v = torch::cat({scale_v, torch::tensor((float)1./*actions.size()*/)});
             hidden_state = network_output_1.hidden_state;
         }
 
 
         for (int k = 0; k < std::min(predictions.size(), targets.size()); k++) {
             if (i == 0 && k == 0) {
-                values_v = predictions[k].value_tensor;
-                rewards_v = predictions[k].reward_tensor;
-                logits_v = predictions[k].policy_tensor;
+                values_v = predictions[k].value_tensor.reshape({1});
+                rewards_v = predictions[k].reward_tensor.reshape({1});
+                logits_v = predictions[k].policy_tensor.reshape({-1,ACTIONS });
                 target_policies_v = torch::tensor(targets[k].policy);
             } else {
-                values_v = torch::cat({values_v, predictions[k].value_tensor});
-                rewards_v = torch::cat({rewards_v, predictions[k].reward_tensor});
-                logits_v = torch::cat({logits_v, predictions[k].policy_tensor});
+                values_v = torch::cat({values_v, predictions[k].value_tensor.reshape({1})});
+                rewards_v = torch::cat({rewards_v, predictions[k].reward_tensor.reshape({1})});
+                logits_v = torch::cat({logits_v, predictions[k].policy_tensor.reshape({-1, ACTIONS})});
                 target_policies_v = torch::cat({target_policies_v, torch::tensor(targets[k].policy)});
             }
             target_values_v.emplace_back(targets[k].value);
@@ -1653,48 +1899,43 @@ void update_weights(torch::optim::Optimizer& opt, Network& network, std::vector<
     torch::Tensor target_rewards = torch::tensor(target_rewards_v).reshape({-1, 1}).to(ctx);
     torch::Tensor logits = logits_v.reshape({-1, ACTIONS}).to(ctx);
     torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
+    torch::Tensor scale = scale_v.reshape({-1, 1}).to(ctx);
 
-    torch::Tensor l = torch::mse_loss(values, target_values)
-                      + torch::mse_loss(rewards, target_rewards)
-                      + cross_entropy_loss(logits, target_policies);
+    torch::Tensor l = (torch::mse_loss(values, target_values, Reduction::None) * scale).mean()
+                      + (torch::mse_loss(rewards, target_rewards, Reduction::None) * scale).mean()
+                      + cross_entropy_loss(logits, target_policies, scale);
     std::cout << "\t\t loss: " << l.item<float>() << std::endl;
 
     l.backward();
     opt.step();
 }
 
-void train_network(MuZeroConfig& config, SharedStorage& storage, ReplayBuffer replay_buffer, torch::Device ctx) {
-    Network network = storage.latest_network(ctx);
-    network._train(true);
-    std::vector<torch::Tensor> params({});
-    std::vector<torch::Tensor> r_params = network.representation->parameters();
-    std::vector<torch::Tensor> d_params = network.dynamics->parameters();
-    std::vector<torch::Tensor> p_params = network.prediction->parameters();
+void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storage, ReplayBuffer replay_buffer, torch::Device ctx) {
+    std::shared_ptr<Network_i> network = storage->latest_network(ctx);
+    network->_train(true);
+    std::vector<torch::Tensor> params = network->parameters();
 
-    std::copy(r_params.begin(), r_params.end(), std::back_inserter(params));
-    std::copy(d_params.begin(), d_params.end(), std::back_inserter(params));
-    std::copy(p_params.begin(), p_params.end(), std::back_inserter(params));
-
-    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
-    .momentum(config.momentum).weight_decay(config.weight_decay));
+    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
+    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
         std::cout << i << "\t";
         if(i != 0 && i % config.checkpoint_interval == 0) {
-            storage.save_network(i, network);
+            storage->save_network(i, network);
         }
         std::vector<Batch> batch = replay_buffer.sample_batch(config.num_unroll_steps, config.td_steps);
         update_weights(opt, network, batch, config.weight_decay, ctx);
-        network.training_steps++;
-//        sleep(10);
+        network->inc_trainint_steps();
     }
-    storage.save_network(config.training_steps, network);
+    storage->save_network(config.training_steps, network);
 
 }
 
 
-Network muzero(MuZeroConfig config) {
-    SharedStorage storage;
+std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
+    std::shared_ptr<BatchSharedStorage> b_storage = std::make_shared<BatchSharedStorage>(config);
+    int bs = config.train ? 1 : config.num_actors/8;
+    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), 8);
     ReplayBuffer replay_buffer(config);
 
     std::vector<std::shared_ptr<std::thread>> threads;
@@ -1710,7 +1951,7 @@ Network muzero(MuZeroConfig config) {
     for(int i = 0; i < threads.size(); i++)
         threads[i]->join();
 
-    return storage.latest_network(get_train_ctx());
+    return storage->latest_network(get_train_ctx());
 }
 
 
@@ -1722,7 +1963,8 @@ int main(int argc, char** argv) {
     ("help", "produce help")
             ("train", boost::program_options::value<bool>(), "set train mode")
             ("workers", boost::program_options::value<int>(), "number of workers")
-            ("lr", boost::program_options::value<float>(), "learning rate");
+            ("lr", boost::program_options::value<float>(), "learning rate")
+            ("path", boost::program_options::value<std::string>(), "data path");
 
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
@@ -1743,6 +1985,12 @@ int main(int argc, char** argv) {
 
     if(vm.count("lr")) {
         config.lr_init = vm["lr"].as<float>();
+    }
+
+    if(vm.count("path")) {
+        config.path = vm["path"].as<std::string>();
+    } else {
+        config.path = "/home/tomas/CLionProjects/muzero";
     }
     muzero(config);
     return 0;
