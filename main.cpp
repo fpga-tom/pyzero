@@ -709,7 +709,7 @@ struct ReplayBuffer {
             game_files.emplace_back((*it).second.c_str());
         }
 
-        game_files.erase(game_files.begin(), game_files.begin() + 7000);
+//        game_files.erase(game_files.begin(), game_files.begin() + 22000);
 
         std::random_shuffle(game_files.begin(), game_files.end());
     }
@@ -1421,8 +1421,8 @@ struct Network : Network_i {
             float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
             assert(!isnan(v));
             ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden,
-                                 std::get<1>(prediction_output), torch::tensor({(float) 0}).to(ctx),
-                                 std::get<0>(prediction_output), hidden_state_tensor));
+                                 std::get<1>(prediction_output)[id], torch::tensor({(float) 0}).to(ctx),
+                                 std::get<0>(prediction_output)[id], hidden_state_tensor[id]));
         }
         return ret;
     }
@@ -1454,8 +1454,8 @@ struct Network : Network_i {
             assert(!isnan(v));
             ret.out.emplace_back( NetworkOutput(v, r, policy,
                                  hidden,
-                                 std::get<1>(prediction_output), std::get<1>(hidden_state_tensor),
-                                 std::get<0>(prediction_output), std::get<0>(hidden_state_tensor)));
+                                 std::get<1>(prediction_output)[id], std::get<1>(hidden_state_tensor)[id],
+                                 std::get<0>(prediction_output)[id], std::get<0>(hidden_state_tensor)[id]));
         }
         return ret;
 
