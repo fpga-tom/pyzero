@@ -246,7 +246,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            100,
+            400,
             128,
             max_moves,  //Always use Monte Carlo return.
             1,
@@ -259,7 +259,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 16, 0.25, 0.00001);
+    return make_board_config(ACTIONS, 16, 0.03, 0.001);
 }
 
 
@@ -440,7 +440,7 @@ struct Environment {
         }
 //        std::copy(seq.begin(), seq.end(), std::ostream_iterator<int>(result, ""));
         std::string str = result.str();
-        std::cout << str << std::endl;
+//        std::cout << str << std::endl;
         f.seekg(0, std::ios::beg);
         while (f.good()) {
             getline(f, line);
@@ -709,7 +709,7 @@ struct ReplayBuffer {
             game_files.emplace_back((*it).second.c_str());
         }
 
-//        game_files.erase(game_files.begin(), game_files.begin() + 22000);
+        game_files.erase(game_files.begin(), game_files.begin() + 81000);
 
         std::random_shuffle(game_files.begin(), game_files.end());
     }
@@ -905,7 +905,7 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
               layer2(_make_layer(128, layers[1], 2)),
               layer3(_make_layer(128, layers[2], 2)),
               layer4(_make_layer(128, layers[3], 2)),
-              fc(1024 * Block::expansion, num_classes)
+              fc(2048 * Block::expansion, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1024,11 +1024,11 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
 //              fc1(512 * Block::expansion, 1),
               conv2(conv_options(128, 1,3,3,1)),
               bn2(1),
-              fc1(43 * Block::expansion, 1),
+              fc1(86 * Block::expansion, 1),
 //              fc2(64, 1),
               conv3(conv_options(128, 1,3,3,1)),
               bn3(1),
-              fc3(43 * Block::expansion, num_classes),
+              fc3(86 * Block::expansion, num_classes),
 //              fc4(256, num_classes),
               embedding(torch::nn::Embedding(ACTIONS+1, HIDDEN))
     {
@@ -1140,7 +1140,7 @@ private:
 
 template <class Block> struct ResNet_prediction : torch::nn::Module {
 
-    int64_t inplanes = 64;
+    int64_t inplanes = 128;
     torch::nn::Conv1d conv1;
     torch::nn::BatchNorm bn1;
     torch::nn::Sequential layer1;
@@ -1160,20 +1160,20 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 //    torch::nn::Linear fc4;
 
     ResNet_prediction(torch::IntList layers, int64_t num_classes=1000)
-            : conv1(conv_options(1, 64, 3, 1, 1)),
-              bn1(64),
-              layer1(_make_layer(64, layers[0])),
-              layer2(_make_layer(128, layers[1], 1)),
-              layer3(_make_layer(128, layers[2], 1)),
-              layer4(_make_layer(128, layers[3], 1)),
+            : conv1(conv_options(1, 128, 3, 1, 1)),
+              bn1(128),
+              layer1(_make_layer(128, layers[0])),
+              layer2(_make_layer(256, layers[1], 1)),
+              layer3(_make_layer(256, layers[2], 1)),
+              layer4(_make_layer(256, layers[3], 1)),
 //              fc(1024 * Block::expansion, num_classes),
-              conv2(conv_options(43, 1,3,2,1)),
+              conv2(conv_options(86, 1,3,2,1)),
               bn2(1),
-              fc1(11 * Block::expansion, 128),
+              fc1(22 * Block::expansion, 128),
               fc2(128, 1),
-    conv3(conv_options(43, 1,3,2,1)),
+    conv3(conv_options(86, 1,3,2,1)),
     bn3(1),
-    fc3(11 * Block::expansion, num_classes)
+    fc3(22 * Block::expansion, num_classes)
 //    fc4(128, num_classes)
     {
         register_module("conv1", conv1);
@@ -1291,15 +1291,15 @@ private:
 
 
 std::shared_ptr<ResNet_representation<BasicBlock>> resnet_representation(int num_classes){
-    return std::make_shared<ResNet_representation<BasicBlock>>(torch::IntList ({3, 3, 3, 3}), num_classes);
+    return std::make_shared<ResNet_representation<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 std::shared_ptr<ResNet_dynamics<BasicBlock>> resnet_dynamics(int num_classes){
-    return std::make_shared<ResNet_dynamics<BasicBlock>>(torch::IntList ({3, 3, 3, 3}), num_classes);
+    return std::make_shared<ResNet_dynamics<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 std::shared_ptr<ResNet_prediction<BasicBlock>> resnet_prediction(int num_classes){
-    return std::make_shared<ResNet_prediction<BasicBlock>>(torch::IntList ({3, 3, 3, 3}), num_classes);
+    return std::make_shared<ResNet_prediction<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 
@@ -1585,7 +1585,6 @@ struct BatchInference : Inference_i {
         while (run) {
             std::vector<batch_in_t> b = initial_queue_read->dequeue_all();
             std::copy(b.begin(), b.end(), std::back_inserter(initial_batches));
-
             DUMP_LOG(initial_batches.size())
 
             batch_in_t batch_in = merge_batch(initial_batches);
@@ -1911,7 +1910,7 @@ std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i>
         expand_node(root, game->to_play(), game->legal_actions(), no);
         add_exploration_noise(config, root);
 
-//        std::cout << "run_mcts " << count << std::endl;
+        std::cout << "run_mcts " << count << std::endl;
         count++;
         run_mcts(config, root, game->action_history(), network);
         Action action = select_action(config, game->history.size(), root, network);
@@ -1933,8 +1932,9 @@ void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
 
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
     torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
+    torch::Tensor t1 = target - target.max_values(1).reshape({-1, 1});
     torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
-    torch::Tensor entropy = -(target * torch::log(target + 1e-8)).sum(1).mean();
+    torch::Tensor entropy = -(target * (t1 - torch::log(torch::exp(t1).sum(1)).reshape({-1,1}))).sum(1).mean();
     std::cout << "entropy: " << entropy.item<float>() << " weighted_cross_entropy: " << r.item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
@@ -1956,7 +1956,7 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     std::vector<std::vector<NetworkOutput>> predictions(batch.size());
 
     DUMP_LOG(batch.size())
-#pragma omp parallel num_threads(64)  default(none) shared(batch, network, network_output_vector, predictions, std::cout)
+#pragma omp parallel num_threads(64)  default(none) shared(batch, network, network_output_vector, predictions)
     {
 #pragma omp for schedule(static)
         for (int i = 0; i < batch.size(); ++i) {
@@ -2067,7 +2067,7 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 
 std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
     std::shared_ptr<BatchSharedStorage> b_storage = std::make_shared<BatchSharedStorage>(config);
-    int bs = config.train ? 64 : config.num_actors/8;
+    int bs = config.train ? 128 : config.num_actors/8;
     std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : 8);
     ReplayBuffer replay_buffer(config);
 
