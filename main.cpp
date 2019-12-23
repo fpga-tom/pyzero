@@ -165,7 +165,7 @@ struct MuZeroConfig {
 
             // Training
             training_steps(int(1000e3)),
-            checkpoint_interval(int(20)),
+            checkpoint_interval(int(50)),
             window_size(int(1e6)),
             batch_size(batch_size),
             num_unroll_steps(5),
@@ -246,7 +246,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            400,
+            100,
             128,
             max_moves,  //Always use Monte Carlo return.
             1,
@@ -709,7 +709,9 @@ struct ReplayBuffer {
             game_files.emplace_back((*it).second.c_str());
         }
 
-        game_files.erase(game_files.begin(), game_files.begin() + 81000);
+        if(game_files.size() - window_size > 0) {
+            game_files.erase(game_files.begin(), game_files.end() - window_size);
+        }
 
         std::random_shuffle(game_files.begin(), game_files.end());
     }
@@ -2097,7 +2099,8 @@ int main(int argc, char** argv) {
             ("train", boost::program_options::value<bool>(), "set train mode")
             ("workers", boost::program_options::value<int>(), "number of workers")
             ("lr", boost::program_options::value<float>(), "learning rate")
-            ("path", boost::program_options::value<std::string>(), "data path");
+            ("path", boost::program_options::value<std::string>(), "data path")
+            ("window", boost::program_options::value<int>(), "window size");
 
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
@@ -2124,6 +2127,12 @@ int main(int argc, char** argv) {
         config.path = vm["path"].as<std::string>();
     } else {
         config.path = "/home/tomas/CLionProjects/muzero";
+    }
+
+    if(vm.count("window")) {
+        config.window_size = vm["window"].as<int>();
+    } else {
+        config.window_size = 2000;
     }
     omp_set_dynamic(0);
     omp_set_num_threads(64);
