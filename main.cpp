@@ -263,7 +263,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 16, 0.03, 0.001);
+    return make_board_config(ACTIONS, 8, 0.03, 0.001);
 }
 
 
@@ -435,6 +435,20 @@ struct Environment {
         }
     }
 
+    int h_dist(const std::string& a, const std::string& b) {
+        int count=0;
+        for(int i=0; i<std::min(a.size(), b.size()); i++)
+        {
+            int partial = (a[i] & 0xFF) ^ (b[i] & 0xFF);
+            while(partial)
+            {
+                count += partial & 1;
+                partial = partial >>1;
+            }
+        }
+        return count;
+    }
+
     float step(Action &action) {
         std::string line;
         seq.emplace_back(action.index);
@@ -446,14 +460,22 @@ struct Environment {
         std::string str = result.str();
 //        std::cout << str << std::endl;
         f.seekg(0, std::ios::beg);
+        int d = 256;
         while (f.good()) {
             getline(f, line);
-            size_t pos = line.find(str);
-            if (pos != std::string::npos) {
-                return 1.;
+            if(line.size() > str.size()) {
+                for (size_t i = 0; i < line.size() - str.size(); i++) {
+                    int d1 = h_dist(str, line.substr(i));
+                    d = std::min(d, d1);
+                }
             }
         }
-        return -1.;
+        return 10./(1+d);
+//            size_t pos = line.find(str);
+//            if (pos != std::string::npos) {
+//                return 1.;
+//            }
+        //return -1.;
     }
 
     virtual ~Environment() {
@@ -713,7 +735,7 @@ struct ReplayBuffer {
             game_files.emplace_back((*it).second.c_str());
         }
 
-        if(game_files.size() - window_size > 0) {
+        if(game_files.size() > window_size) {
             game_files.erase(game_files.begin(), game_files.end() - window_size);
         }
 
@@ -1178,7 +1200,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
     torch::nn::Conv1d conv3;
     torch::nn::BatchNorm bn3;
     torch::nn::Linear fc3;
-//    torch::nn::Linear fc4;
+    torch::nn::Linear fc4;
 
     ResNet_prediction(torch::IntList layers, int64_t num_classes=1000)
             : conv1(conv_options(1, 128, 3, 1, 1)),
@@ -1194,8 +1216,8 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 //              fc2(128, 1),
     conv3(conv_options(1024, 16,3,2,1)),
     bn3(16),
-    fc3(12 * Block::expansion, num_classes)
-//    fc4(128, num_classes)
+    fc3(12 * Block::expansion, 128),
+    fc4(128, num_classes)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1212,7 +1234,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         register_module("conv3", conv3);
         register_module("bn3", bn3);
         register_module("fc3", fc3);
-//        register_module("fc4", fc4);
+        register_module("fc4", fc4);
 
         // Initializing weights
         for(auto m: this->modules(false)){
@@ -1282,8 +1304,9 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = bn3->forward(x);
         x = torch::relu(x);
         x = fc3->forward(x.view({x.sizes()[0], 1, -1}));
+        x = torch::relu(x);
+        x = fc4->forward(x);
         x = x.clamp(-10, 10);
-//        x = fc4->forward(x);
 
         DUMP_LOG(x.sizes());
         DUMP_LOG(y.sizes());
@@ -1952,7 +1975,7 @@ void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
     torch::Tensor r = -(target *(torch::log_softmax(input, 1))).sum(1);//-(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
-    torch::Tensor entropy = -(target * torch::log(target)).sum(1).mean();
+    torch::Tensor entropy = -(target * torch::log(target+1e-10)).sum(1).mean();
     std::cout << "entropy: " << entropy.item<float>() << " cross_entropy: " << r.mean().item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
@@ -2116,7 +2139,8 @@ int main(int argc, char** argv) {
             ("window", boost::program_options::value<int>(), "window size")
             ("training_steps", boost::program_options::value<int>(), "number of training steps")
             ("checkpoint_interval", boost::program_options::value<int>(), "number of steps when to checkpoint network")
-            ("num_selfplay", boost::program_options::value<int>(), "number of games to play");
+            ("num_selfplay", boost::program_options::value<int>(), "number of games to play")
+            ("batch", boost::program_options::value<int>(), "batch size");
 
     boost::program_options::variables_map vm;
     boost::program_options::store(boost::program_options::parse_command_line(argc, argv, desc), vm);
@@ -2160,6 +2184,9 @@ int main(int argc, char** argv) {
     }
     if(vm.count("num_selfplay")) {
         config.num_selfplay = vm["num_selfplay"].as<int>();
+    }
+    if(vm.count("batch")) {
+        config.batch_size = vm["batch"].as<int>();
     }
     omp_set_dynamic(0);
     omp_set_num_threads(64);
