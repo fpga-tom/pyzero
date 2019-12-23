@@ -12,7 +12,7 @@ link_directories(${Boost_LIBRARY_DIR})
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wl,--no-as-needed")
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -Wl,--no-as-needed -DDEBUG")
+#set(CMAKE_CXX_FLAGS_DEBUG "-DDEBUG")
 set(CMAKE_VERBOSE_MAKEFILE ON)
 add_subdirectory(abseil-cpp)
 

@@ -120,6 +120,8 @@ struct NetworkOutput {
     torch::Tensor policy_tensor;
     torch::Tensor hidden_tensor;
 
+    NetworkOutput() {}
+
     NetworkOutput(float value, float reward, Policy_t policy_logits, HiddenState_t hidden_state,
                   torch::Tensor value_tensor, torch::Tensor reward_tensor, torch::Tensor policy_tensor,
                   torch::Tensor hidden_tensor) :
@@ -167,6 +169,19 @@ struct Buffer : Queue_i<T> {
         cond.wait(lock, [this]() {return !is_empty();});
         T result = buffer.front();
         buffer.pop_front();
+        lock.unlock();
+        cond.notify_all();
+        return result;
+    }
+
+    std::vector<T> dequeue_all() {
+        std::unique_lock<std::mutex> lock(mutex);
+        cond.wait(lock, [this]() {return !is_empty();});
+        std::vector<T> result = {};
+        for(auto it = buffer.begin(); it != buffer.end(); ++it) {
+            result.emplace_back(*it);
+        }
+        buffer.clear();
         lock.unlock();
         cond.notify_all();
         return result;

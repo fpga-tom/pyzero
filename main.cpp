@@ -259,7 +259,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 16, 0.03, 0.00001);
+    return make_board_config(ACTIONS, 16, 0.25, 0.00001);
 }
 
 
@@ -1567,10 +1567,12 @@ struct BatchInference : Inference_i {
 
     void initial_thread() {
         DUMP_LOG(batch_size)
+#if 0
         while (run) {
                 batch_in_t b = initial_queue_read->dequeue();
                 initial_batches.emplace_back(b);
 
+                DUMP_LOG(initial_batches.size())
 
                 if(initial_batches.size() == batch_size) {
                     batch_in_t batch_in = merge_batch(initial_batches);
@@ -1579,21 +1581,49 @@ struct BatchInference : Inference_i {
                     initial_batches.clear();
                 }
         }
+#else
+        while (run) {
+            std::vector<batch_in_t> b = initial_queue_read->dequeue_all();
+            std::copy(b.begin(), b.end(), std::back_inserter(initial_batches));
+
+            DUMP_LOG(initial_batches.size())
+
+            batch_in_t batch_in = merge_batch(initial_batches);
+            batch_out_t batch_out = initial_inference(batch_in);
+            distill_batch(batch_in,batch_out);
+            initial_batches.clear();
+        }
+#endif
     }
 
     void recurrent_thread() {
         DUMP_LOG(batch_size)
-            while (run) {
-                batch_in_t b = recurrent_queue_read->dequeue();
-                recurrent_batches.emplace_back(b);
+#if 0
+        while (run) {
+            batch_in_t b = recurrent_queue_read->dequeue();
+            recurrent_batches.emplace_back(b);
+            DUMP_LOG(recurrent_batches.size())
 
-                if (recurrent_batches.size() == batch_size) {
-                    batch_in_t batch_in = merge_batch(recurrent_batches);
-                    batch_out_t batch_out = recurrent_inference(batch_in);
-                    distill_batch(batch_in, batch_out);
-                    recurrent_batches.clear();
-                }
+
+            if (recurrent_batches.size() == batch_size) {
+                batch_in_t batch_in = merge_batch(recurrent_batches);
+                batch_out_t batch_out = recurrent_inference(batch_in);
+                distill_batch(batch_in, batch_out);
+                recurrent_batches.clear();
             }
+        }
+#else
+        while (run) {
+            std::vector<batch_in_t> b = recurrent_queue_read->dequeue_all();
+            std::copy(b.begin(), b.end(), std::back_inserter(recurrent_batches));
+            DUMP_LOG(recurrent_batches.size())
+
+            batch_in_t batch_in = merge_batch(recurrent_batches);
+            batch_out_t batch_out = recurrent_inference(batch_in);
+            distill_batch(batch_in, batch_out);
+            recurrent_batches.clear();
+        }
+#endif
     }
 
     batch_in_t merge_batch(std::vector<batch_in_t>& batch) {
@@ -1615,6 +1645,7 @@ struct BatchInference : Inference_i {
     }
 
     void distill_batch(batch_in_t& batch_in, batch_out_t& batch_out) {
+        DUMP_LOG(batch_out.out.size());
         for(int i = 0; i < batch_in.out.size(); i++) {
             batch_out_t b;
             b.out = {};
@@ -1900,10 +1931,10 @@ void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
     }
 }
 
-torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, torch::Tensor scale) {
+torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
     torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
-    torch::Tensor r = -((target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1) * scale).mean();
-    torch::Tensor entropy = -((target * torch::log(target + 1e-8)).sum(1) * scale).mean();
+    torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
+    torch::Tensor entropy = -(target * torch::log(target + 1e-8)).sum(1).mean();
     std::cout << "entropy: " << entropy.item<float>() << " weighted_cross_entropy: " << r.item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
@@ -1921,16 +1952,50 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     torch::Tensor scale_v;
 
     network->zero_grad();
-    for (int i = 0; i < batch.size(); i++) {
+    std::vector<NetworkOutput> network_output_vector(batch.size());
+    std::vector<std::vector<NetworkOutput>> predictions(batch.size());
 
-        std::vector<NetworkOutput> predictions;
+    DUMP_LOG(batch.size())
+#pragma omp parallel num_threads(64)  default(none) shared(batch, network, network_output_vector, predictions, std::cout)
+    {
+#pragma omp for schedule(static)
+        for (int i = 0; i < batch.size(); ++i) {
+            Image_t image = batch[i].image;
 
-        Image_t image = batch[i].image;
-        ActionList_t actions = batch[i].action;
+            NetworkOutput network_output = network->initial_inference(
+                    batch_in_s::make_batch(image)).network_output();
+            network_output_vector[i] = network_output;
+            if (predictions[i].size() == 0) {
+                predictions[i] = {};
+            }
+            predictions[i].emplace_back(network_output);
+        }
+    }
+
+
+#pragma omp parallel num_threads(64) default(none) shared(batch, network, network_output_vector, predictions)
+    {
+#pragma omp for schedule(static)
+        for (int i = 0; i < batch.size(); i++) {
+
+            ActionList_t actions = batch[i].action;
+            std::vector<Target> targets = batch[i].target;
+
+            HiddenState_t hidden_state = network_output_vector[i].hidden_state;
+            for (int j = 0; j < actions.size() - 1; j++) {
+
+                NetworkOutput network_output_1 = network->recurrent_inference(
+                        batch_in_s::make_batch(hidden_state, actions[j])).network_output();
+
+                predictions[i].emplace_back(network_output_1);
+//            scale_v = torch::cat({scale_v, torch::tensor((float) 1./*actions.size()*/)});
+                hidden_state = network_output_1.hidden_state;
+            }
+        }
+    }
+    for(int i = 0; i < batch.size(); i++) {
+
         std::vector<Target> targets = batch[i].target;
-        NetworkOutput network_output = network->initial_inference(batch_in_s::make_batch(image)).network_output();
-
-        predictions.emplace_back(network_output);
         if(i == 0) {
             scale_v = torch::tensor((float)1);
         } else {
@@ -1938,25 +2003,21 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
         }
 
 
-        HiddenState_t hidden_state = network_output.hidden_state;
-        for (int j = 0; j < actions.size() - 1; j++) {
-            NetworkOutput network_output_1 = network->recurrent_inference(batch_in_s::make_batch(hidden_state, actions[j])).network_output();
-            predictions.emplace_back(network_output_1);
-            scale_v = torch::cat({scale_v, torch::tensor((float)1./*actions.size()*/)});
-            hidden_state = network_output_1.hidden_state;
-        }
 
 
-        for (int k = 0; k < std::min(predictions.size(), targets.size()); k++) {
+
+
+        for (int k = 0; k < std::min(predictions[i].size(), targets.size()); k++) {
             if (i == 0 && k == 0) {
-                values_v = predictions[k].value_tensor.reshape({1});
-                rewards_v = predictions[k].reward_tensor.reshape({1});
-                logits_v = predictions[k].policy_tensor.reshape({-1,ACTIONS });
+                values_v = predictions[i][k].value_tensor.reshape({1});
+                rewards_v = predictions[i][k].reward_tensor.reshape({1});
+                logits_v = predictions[i][k].policy_tensor.reshape({-1,ACTIONS });
                 target_policies_v = torch::tensor(targets[k].policy);
             } else {
-                values_v = torch::cat({values_v, predictions[k].value_tensor.reshape({1})});
-                rewards_v = torch::cat({rewards_v, predictions[k].reward_tensor.reshape({1})});
-                logits_v = torch::cat({logits_v, predictions[k].policy_tensor.reshape({-1, ACTIONS})});
+                DUMP_LOG(predictions[i][k].value_tensor.sizes())
+                values_v = torch::cat({values_v, predictions[i][k].value_tensor.reshape({1})});
+                rewards_v = torch::cat({rewards_v, predictions[i][k].reward_tensor.reshape({1})});
+                logits_v = torch::cat({logits_v, predictions[i][k].policy_tensor.reshape({-1, ACTIONS})});
                 target_policies_v = torch::cat({target_policies_v, torch::tensor(targets[k].policy)});
             }
             target_values_v.emplace_back(targets[k].value);
@@ -1973,9 +2034,9 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
     torch::Tensor scale = scale_v.reshape({-1, 1}).to(ctx);
 
-    torch::Tensor l = (torch::mse_loss(values, target_values, Reduction::None) * scale).mean()
-                      + (torch::mse_loss(rewards, target_rewards, Reduction::None) * scale).mean()
-                      + cross_entropy_loss(logits, target_policies, scale);
+    torch::Tensor l = torch::mse_loss(values, target_values)
+                      + torch::mse_loss(rewards, target_rewards)
+                      + cross_entropy_loss(logits, target_policies);
     std::cout << "\t\t loss: " << l.item<float>() << std::endl;
 
     l.backward();
@@ -2006,8 +2067,8 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 
 std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
     std::shared_ptr<BatchSharedStorage> b_storage = std::make_shared<BatchSharedStorage>(config);
-    int bs = config.train ? 1 : config.num_actors/8;
-    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), 8);
+    int bs = config.train ? 64 : config.num_actors/8;
+    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : 8);
     ReplayBuffer replay_buffer(config);
 
     std::vector<std::shared_ptr<std::thread>> threads;
@@ -2064,6 +2125,9 @@ int main(int argc, char** argv) {
     } else {
         config.path = "/home/tomas/CLionProjects/muzero";
     }
+    omp_set_dynamic(0);
+    omp_set_num_threads(64);
+    DUMP_LOG(omp_get_max_threads());
     muzero(config);
     return 0;
 }
