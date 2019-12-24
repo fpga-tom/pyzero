@@ -474,7 +474,7 @@ struct Environment {
         int d = 0;
         while (f.good()) {
             getline(f, line);
-
+/*
             if(line.size() > str.size()) {
                 for (size_t i = 0; i < line.size() - str.size(); i++) {
                     int d1 = h_dist(str, line.substr(i));
@@ -483,15 +483,14 @@ struct Environment {
             }
         }
         return ((float)d)/(8.*str.size());
+        */
 
-            /*
             size_t pos = line.find(str);
             if (pos != std::string::npos) {
                 return 1.;
             }
         }
         return -1.;
-             */
     }
 
 
@@ -1602,6 +1601,7 @@ struct BatchInference : Inference_i {
     std::atomic_bool run;
 
     std::shared_ptr<std::thread> i_thread, r_thread;
+    std::thread::native_handle_type i_handle, r_handle;
 
     BatchInference(std::shared_ptr<Network_i> inference, int batch_size) : inference(inference),
                                                                               batch_size(batch_size),
@@ -1621,6 +1621,7 @@ struct BatchInference : Inference_i {
     }
 
     virtual ~BatchInference() {
+        run = false;
         i_thread->join();
         r_thread->join();
     }
@@ -1643,7 +1644,9 @@ struct BatchInference : Inference_i {
         }
 #else
         while (run) {
-            std::vector<batch_in_t> b = initial_queue_read->dequeue_all();
+            std::vector<batch_in_t> b = initial_queue_read->dequeue_all(std::chrono::milliseconds(5));
+            if(b.empty())
+                continue;
             std::copy(b.begin(), b.end(), std::back_inserter(initial_batches));
             DUMP_LOG(initial_batches.size())
 
@@ -1673,7 +1676,9 @@ struct BatchInference : Inference_i {
         }
 #else
         while (run) {
-            std::vector<batch_in_t> b = recurrent_queue_read->dequeue_all();
+            std::vector<batch_in_t> b = recurrent_queue_read->dequeue_all(std::chrono::milliseconds(5));
+            if(b.empty())
+                continue;
             std::copy(b.begin(), b.end(), std::back_inserter(recurrent_batches));
             DUMP_LOG(recurrent_batches.size())
 

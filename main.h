@@ -174,17 +174,19 @@ struct Buffer : Queue_i<T> {
         return result;
     }
 
-    std::vector<T> dequeue_all() {
+    std::vector<T> dequeue_all(std::chrono::milliseconds ms) {
         std::unique_lock<std::mutex> lock(mutex);
-        cond.wait(lock, [this]() {return !is_empty();});
-        std::vector<T> result = {};
-        for(auto it = buffer.begin(); it != buffer.end(); ++it) {
-            result.emplace_back(*it);
+        if(cond.wait_for(lock, ms ,[this]() {return !is_empty();})) {
+            std::vector<T> result = {};
+            for (auto it = buffer.begin(); it != buffer.end(); ++it) {
+                result.emplace_back(*it);
+            }
+            buffer.clear();
+            lock.unlock();
+            cond.notify_all();
+            return result;
         }
-        buffer.clear();
-        lock.unlock();
-        cond.notify_all();
-        return result;
+        return {};
     }
 };
 
