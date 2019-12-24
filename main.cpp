@@ -87,6 +87,9 @@ torch::Device get_cpu_ctx() {
 
 
 Random rnd(Random::kUniqueSeed, Random::kUniqueStream);
+std::random_device seeder;
+std::mt19937 engine(seeder());
+std::default_random_engine generator;
 
 struct Game;
 
@@ -250,7 +253,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            124,
+            93,
             128,
             max_moves,  //Always use Monte Carlo return.
             1,
@@ -263,7 +266,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 8, 0.03, 0.001);
+    return make_board_config(ACTIONS, 6, 0.03, 0.001);
 }
 
 
@@ -439,7 +442,7 @@ struct Environment {
         int count=0;
         for(int i=0; i<std::min(a.size(), b.size()); i++)
         {
-            int partial = (a[i] & 0xFF) ^ (b[i] & 0xFF);
+            int partial = (~((a[i] & 0xFF) ^ (b[i] & 0xFF)))&0xFF;
             while(partial)
             {
                 count += partial & 1;
@@ -449,6 +452,13 @@ struct Environment {
         return count;
     }
 
+    void print_state (const std::ios& stream) {
+        std::cout << " good()=" << stream.good();
+        std::cout << " eof()=" << stream.eof();
+        std::cout << " fail()=" << stream.fail();
+        std::cout << " bad()=" << stream.bad();
+    }
+
     float step(Action &action) {
         std::string line;
         seq.emplace_back(action.index);
@@ -456,27 +466,34 @@ struct Environment {
         for(int i = 0; i < seq.size(); i++) {
             result << PRINTABLE[seq[i]];
         }
-//        std::copy(seq.begin(), seq.end(), std::ostream_iterator<int>(result, ""));
         std::string str = result.str();
-//        std::cout << str << std::endl;
+        std::cout << str << std::endl;
+        f.clear();
         f.seekg(0, std::ios::beg);
-        int d = 256;
+        assert(f.good());
+        int d = 0;
         while (f.good()) {
             getline(f, line);
+
             if(line.size() > str.size()) {
                 for (size_t i = 0; i < line.size() - str.size(); i++) {
                     int d1 = h_dist(str, line.substr(i));
-                    d = std::min(d, d1);
+                    d = std::max(d, d1);
                 }
             }
         }
-        return 10./(1+d);
-//            size_t pos = line.find(str);
-//            if (pos != std::string::npos) {
-//                return 1.;
-//            }
-        //return -1.;
+        return ((float)d)/(8.*str.size());
+
+            /*
+            size_t pos = line.find(str);
+            if (pos != std::string::npos) {
+                return 1.;
+            }
+        }
+        return -1.;
+             */
     }
+
 
     virtual ~Environment() {
         f.close();
@@ -686,8 +703,7 @@ struct Batch {
 
 };
 
-std::random_device seeder;
-std::mt19937 engine(seeder());
+
 
 struct ReplayBuffer {
     int window_size;
@@ -1149,6 +1165,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         y = bn2->forward(y);
         y = torch::relu(y);
         y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
+        y = y.clamp(-100, 100);
 //        y = torch::tanh(fc2->forward(y));
 
         x = conv3->forward(tmp);
@@ -1297,6 +1314,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 
         y = torch::relu(y);
         y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
+        y = y.clamp(-100, 100);
         DUMP_LOG(y.sizes());
 //        y = fc2->forward(y);
 
@@ -1817,6 +1835,8 @@ struct SingleSharedStorage : SharedStorage_i {
     }
 };
 
+
+
 int softmax_sample(std::vector<float> visit_counts, float temperature) {
 
     if( temperature == 0) {
@@ -1831,7 +1851,7 @@ int softmax_sample(std::vector<float> visit_counts, float temperature) {
     }
 
 
-    std::default_random_engine generator;
+
     std::discrete_distribution<int> distribution(d.begin(), d.end());
 
     return distribution(generator);
@@ -1975,7 +1995,7 @@ void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target) {
 //    torch::Tensor t = input - input.max_values(1).reshape({-1, 1});
     torch::Tensor r = -(target *(torch::log_softmax(input, 1))).sum(1);//-(target * (t - torch::log(torch::exp(t).sum(1)).reshape({-1,1}))).sum(1).mean();
-    torch::Tensor entropy = -(target * torch::log(target+1e-10)).sum(1).mean();
+    torch::Tensor entropy = -(target * torch::log(target+1e-12)).sum(1).mean();
     std::cout << "entropy: " << entropy.item<float>() << " cross_entropy: " << r.mean().item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
