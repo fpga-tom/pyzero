@@ -2,10 +2,12 @@
 192.168.4.1 ansible_user=tomas
 
 [aorus:vars]
-workers=192
+workers=640
+selfplay=9
 
 [gigabyte]
 192.168.4.11 ansible_user=tomas
 
 [gigabyte:vars]
-workers=96
+workers=288
+selfplay=9

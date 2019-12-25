@@ -220,9 +220,9 @@ typedef struct batch_in_s {
     std::vector<long> actions;
     std::vector<std::shared_ptr<batch_queue_out_t>> out;
 
-    static batch_in_s make_batch(HiddenState_t hidden_state, Action action) {
+    static batch_in_s make_batch(HiddenState_t hidden_state, Action action, bool requires_grad=false) {
         batch_in_s ret;
-        ret.batch = torch::tensor(hidden_state);
+        ret.batch = torch::tensor(hidden_state, torch::requires_grad(requires_grad));
         ret.actions = {};
         ret.actions.emplace_back(action.index);
         return ret;
@@ -239,8 +239,8 @@ typedef Buffer<batch_in_t> batch_queue_in_t;
 
 
 typedef struct Inference_i {
-    virtual batch_out_t initial_inference(batch_in_t batch) = 0;
-    virtual batch_out_t recurrent_inference(batch_in_t batch) = 0;
+    virtual batch_out_t initial_inference(batch_in_t& batch) = 0;
+    virtual batch_out_t recurrent_inference(batch_in_t& batch) = 0;
 } Inference_t;
 
 typedef struct Network_i : Inference_i {
