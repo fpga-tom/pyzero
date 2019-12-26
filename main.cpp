@@ -274,7 +274,7 @@ MuZeroConfig make_c_config() {
 struct Player {
     int id;
 
-    Player() : id(-1) {
+    Player(int id=1) : id(id) {
 
     }
 
@@ -345,8 +345,12 @@ struct ActionHistory {
         return r;
     }
 
-    static Player to_play() {
-        return {};
+    Player to_play() {
+        if(history.size() % 2 == 0)
+            return 1;
+        else
+            return -1;
+
     }
 };
 
@@ -439,11 +443,12 @@ struct Environment {
         }
     }
 
-    int h_dist(const std::string& a, const std::string& b) {
+    int h_dist(const std::string& a, const std::string& b, int to_play) {
         int count=0;
         for(int i=0; i<std::min(a.size(), b.size()); i++)
         {
-            count += a[i] == b[i];
+            if(i % 2 == to_play)
+                count += a[i] == b[i];
 //            int partial = (~((a[i] & 0xFF) ^ (b[i] & 0xFF)))&0xFF;
 //            while(partial)
 //            {
@@ -473,31 +478,64 @@ struct Environment {
         f.clear();
         f.seekg(0, std::ios::beg);
         assert(f.good());
-        int d = 0;
+        int d_0 = 0;
+        int d_1 = 0;
         while (f.good()) {
             getline(f, line);
             if(line.size() > str.size()) {
                 for (size_t i = 0; i < line.size() - str.size(); i++) {
-                    int d1 = h_dist(str, line.substr(i));
-                    d = std::max(d, d1);
+                    int d_0_ = h_dist(str, line.substr(i), 0);
+                    d_0 = std::max(d_0, d_0_);
+
+                    int d_1_ = h_dist(str, line.substr(i), 1);
+                    d_1 = std::max(d_1, d_1_);
+
+                    if(d_0 == d_0_ && d_0 > d_1) {
+                        d_1 = d_1_;
+                    } else if(d_1 == d_1_ && d_1 > d_0) {
+                        d_0 = d_0_;
+                    }
                 }
             }
         }
+
+        if(seq.size() % 2 == 0) {
+            if (d_0 > d_1) {
+                return 1;
+            } else if (d_0 < d_1) {
+                return -1;
+            } else {
+                return 0;
+            }
+        } else {
+            if (d_0 <= d_1) {
+                return 1;
+            } else if (d_0 > d_1) {
+                return -1;
+            }
+        }
+        return 0;
+
+        /*
         float ret = d;
         if(rewards.size() > 0) {
-            ret = rewards[rewards.size() - 1] < d;
+            if(rewards[rewards.size() - 1] < d) {
+                ret = 1.;
+            } else {
+                ret = -1.;
+            }
         }
         rewards.emplace_back(d);
-//        return ((float)d)/(8.*str.size());
         return ret;
-/*
+         */
+            /*
             size_t pos = line.find(str);
             if (pos != std::string::npos) {
                 return 1.;
             }
         }
         return -1.;
-        */
+             */
     }
 
 
@@ -555,10 +593,13 @@ struct Game {
     };
 
     bool terminal() {
+        /*
         if(history.size() > 0) {
             return rewards[rewards.size()-1] == -1;
         }
         return false;
+         */
+        return history.size() == 6;
     }
 
     ActionList_t legal_actions() {
@@ -632,7 +673,10 @@ struct Game {
 
 
     Player to_play() {
-        return {};
+        if(history.size() % 2 == 0)
+            return 1;
+        else
+            return -1;
     }
 
     friend std::ofstream &write (std::ofstream &out, const Game& obj) {
@@ -1442,6 +1486,7 @@ struct Network : Network_i {
     }
 
     void _train(bool train) override {
+        is_train = train;
         representation->train(train);
         dynamics->train(train);
         prediction->train(train);
@@ -1487,9 +1532,12 @@ struct Network : Network_i {
             }
             float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
             assert(!isnan(v));
-            ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden,
-                                 std::get<1>(prediction_output)[id], torch::tensor({(float) 0}).to(ctx),
-                                 std::get<0>(prediction_output)[id], hidden_state_tensor[id]));
+            std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
+            if(is_train) {
+                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output)[id], torch::tensor({(float) 0}).to(ctx),
+                                                          std::get<0>(prediction_output)[id], hidden_state_tensor[id]);
+            }
+            ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden, tensor));
         }
         return ret;
     }
@@ -1519,10 +1567,12 @@ struct Network : Network_i {
             float r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx())[id].item<float>();
             float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
             assert(!isnan(v));
-            ret.out.emplace_back( NetworkOutput(v, r, policy,
-                                 hidden,
-                                 std::get<1>(prediction_output)[id], std::get<1>(hidden_state_tensor)[id],
-                                 std::get<0>(prediction_output)[id], std::get<0>(hidden_state_tensor)[id]));
+            std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
+            if(is_train) {
+                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output)[id], std::get<1>(hidden_state_tensor)[id],
+                                                          std::get<0>(prediction_output)[id], std::get<0>(hidden_state_tensor)[id]);
+            }
+            ret.out.emplace_back( NetworkOutput(v, r, policy, hidden, tensor));
         }
         return ret;
 
@@ -1884,7 +1934,7 @@ void backpropagate(std::vector<std::shared_ptr<Node>> &search_path, float value,
         MinMaxStats& min_max_stats) {
     for(int i = 0; i < search_path.size(); i++) {
         std::shared_ptr<Node> node(search_path[i]);
-        node->value_sum += value;//node->to_play == to_play.id ? value : -value;
+        node->value_sum += node->to_play == to_play.id ? value : -value;
         node->visit_count +=1;
         min_max_stats.update(node->value());
         value = node->reward + discount * value;
@@ -2060,10 +2110,9 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
         for (int i = 0; i < batch.size(); i++) {
 
             ActionList_t actions = batch[i].action;
-            std::vector<Target> targets = batch[i].target;
 
             HiddenState_t hidden_state = network_output_vector[i].hidden_state;
-            for (int j = 0; j < actions.size()-1; j++) {
+            for (int j = 0; j < actions.size() - 1; j++) {
 
                 batch_in_s b = batch_in_s::make_batch(hidden_state, actions[j],true);
                 NetworkOutput network_output_1 = network->recurrent_inference(b).network_output();
@@ -2086,15 +2135,15 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
                 scale_v = torch::cat({scale_v, torch::tensor((float)scales_b[i][k])});
             }
             if (i == 0 && k == 0) {
-                values_v = predictions[i][k].value_tensor.reshape({1});
-                rewards_v = predictions[i][k].reward_tensor.reshape({1});
-                logits_v = predictions[i][k].policy_tensor.reshape({ACTIONS });
+                values_v = predictions[i][k].tensor->value_tensor.reshape({1});
+                rewards_v = predictions[i][k].tensor->reward_tensor.reshape({1});
+                logits_v = predictions[i][k].tensor->policy_tensor.reshape({ACTIONS });
                 target_policies_v = torch::tensor(targets[k].policy);
             } else {
                 DUMP_LOG(predictions[i][k].value_tensor.sizes())
-                values_v = torch::cat({values_v, predictions[i][k].value_tensor.reshape({1})});
-                rewards_v = torch::cat({rewards_v, predictions[i][k].reward_tensor.reshape({1})});
-                logits_v = torch::cat({logits_v, predictions[i][k].policy_tensor.reshape({ ACTIONS})});
+                values_v = torch::cat({values_v, predictions[i][k].tensor->value_tensor.reshape({1})});
+                rewards_v = torch::cat({rewards_v, predictions[i][k].tensor->reward_tensor.reshape({1})});
+                logits_v = torch::cat({logits_v, predictions[i][k].tensor->policy_tensor.reshape({ ACTIONS})});
                 target_policies_v = torch::cat({target_policies_v, torch::tensor(targets[k].policy)});
             }
             target_values_v.emplace_back(targets[k].value);
@@ -2111,9 +2160,9 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     torch::Tensor target_policies = target_policies_v.reshape({-1, ACTIONS}).to(ctx);
     torch::Tensor scale = scale_v.reshape({-1, 1}).to(ctx);
 
-    torch::Tensor l = ((values - target_values).pow(2).mean(1) * scale
-                      + (rewards - target_rewards).pow(2).mean(1) * scale
-                      + cross_entropy_loss(logits, target_policies) * scale).mean();
+    torch::Tensor l = (((values - target_values).pow(2).mean(1)
+                      + (rewards - target_rewards).pow(2).mean(1)
+                      + cross_entropy_loss(logits, target_policies)) * scale).mean();
     std::cout << "\t\t loss: " << l.item<float>() << std::endl;
 
     l.backward();
@@ -2145,7 +2194,7 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
     std::shared_ptr<BatchSharedStorage> b_storage = std::make_shared<BatchSharedStorage>(config);
     int bs = config.train ? 128 : 128;//config.num_actors;
-    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : 4);
+    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : 8);
     ReplayBuffer replay_buffer(config);
 
     std::vector<std::shared_ptr<std::thread>> threads;

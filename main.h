@@ -109,25 +109,41 @@ typedef std::vector<long> Image_t;
 typedef std::vector<float> Policy_t;
 typedef std::multimap<std::time_t, boost::filesystem::path> result_set_t;
 
+struct NetworkOutputTensor {
+    torch::Tensor value_tensor;
+    torch::Tensor reward_tensor;
+    torch::Tensor policy_tensor;
+    torch::Tensor hidden_tensor;
+
+    NetworkOutputTensor(torch::Tensor value_tensor, torch::Tensor reward_tensor, torch::Tensor policy_tensor,
+                        torch::Tensor hidden_tensor) : value_tensor(value_tensor), reward_tensor(reward_tensor), policy_tensor(policy_tensor),
+                                                       hidden_tensor(hidden_tensor) {
+
+    }
+
+    static std::shared_ptr<NetworkOutputTensor> make_tensor(torch::Tensor value_tensor, torch::Tensor reward_tensor, torch::Tensor policy_tensor,
+                                                            torch::Tensor hidden_tensor) {
+        return std::make_shared<NetworkOutputTensor>(value_tensor,  reward_tensor, policy_tensor,
+                hidden_tensor);
+
+    }
+};
+
 struct NetworkOutput {
     float value;
     float reward;
     Policy_t policy_logits;
     HiddenState_t hidden_state;
 
-    torch::Tensor value_tensor;
-    torch::Tensor reward_tensor;
-    torch::Tensor policy_tensor;
-    torch::Tensor hidden_tensor;
+    std::shared_ptr<NetworkOutputTensor> tensor;
+
 
     NetworkOutput() {}
 
     NetworkOutput(float value, float reward, Policy_t policy_logits, HiddenState_t hidden_state,
-                  torch::Tensor value_tensor, torch::Tensor reward_tensor, torch::Tensor policy_tensor,
-                  torch::Tensor hidden_tensor) :
+                  std::shared_ptr<NetworkOutputTensor> network_output_tensor) :
             value(value), reward(reward), policy_logits(policy_logits), hidden_state(hidden_state),
-            value_tensor(value_tensor), reward_tensor(reward_tensor), policy_tensor(policy_tensor),
-            hidden_tensor(hidden_tensor) {
+            tensor(network_output_tensor) {
 
     }
 };
