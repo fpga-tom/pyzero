@@ -443,11 +443,10 @@ struct Environment {
         }
     }
 
-    int h_dist(const std::string& a, const std::string& b, int to_play) {
+    int h_dist(const std::string& a, const std::string& b) {
         int count=0;
         for(int i=0; i<std::min(a.size(), b.size()); i++)
         {
-            if(i % 2 == to_play)
                 count += a[i] == b[i];
 //            int partial = (~((a[i] & 0xFF) ^ (b[i] & 0xFF)))&0xFF;
 //            while(partial)
@@ -479,55 +478,52 @@ struct Environment {
         f.seekg(0, std::ios::beg);
         assert(f.good());
         int d_0 = 0;
-        int d_1 = 0;
+//        int d_1 = 0;
         while (f.good()) {
             getline(f, line);
             if(line.size() > str.size()) {
                 for (size_t i = 0; i < line.size() - str.size(); i++) {
-                    int d_0_ = h_dist(str, line.substr(i), 0);
+                    int d_0_ = h_dist(str, line.substr(i));
                     d_0 = std::max(d_0, d_0_);
 
-                    int d_1_ = h_dist(str, line.substr(i), 1);
-                    d_1 = std::max(d_1, d_1_);
-
-                    if(d_0 == d_0_ && d_0 > d_1) {
-                        d_1 = d_1_;
-                    } else if(d_1 == d_1_ && d_1 > d_0) {
-                        d_0 = d_0_;
-                    }
+//                    int d_1_ = h_dist(str, line.substr(i), 1);
+//                    d_1 = std::max(d_1, d_1_);
+//
+//                    if(d_0 == d_0_ && d_0 > d_1) {
+//                        d_1 = d_1_;
+//                    } else if(d_1 == d_1_ && d_1 > d_0) {
+//                        d_0 = d_0_;
+//                    }
                 }
             }
         }
 
-        if(seq.size() % 2 == 0) {
-            if (d_0 > d_1) {
-                return 1;
-            } else if (d_0 < d_1) {
-                return -1;
-            } else {
-                return 0;
-            }
-        } else {
-            if (d_0 <= d_1) {
-                return 1;
-            } else if (d_0 > d_1) {
-                return -1;
-            }
-        }
-        return 0;
+//        if(seq.size() % 2 == 0) {
+//            if (d_0 > d_1) {
+//                return 1;
+//            } else if (d_0 < d_1) {
+//                return -1;
+//            } else {
+//                return 0;
+//            }
+//        } else {
+//            if (d_0 <= d_1) {
+//                return 1;
+//            } else if (d_0 > d_1) {
+//                return -1;
+//            }
+//        }
 
-        /*
-        float ret = d;
+        float ret = d_0;
         if(rewards.size() > 0) {
-            if(rewards[rewards.size() - 1] < d) {
+            if(rewards[rewards.size() - 1] < d_0) {
                 ret = 1.;
             } else {
                 ret = -1.;
             }
         }
-        rewards.emplace_back(d);
+        rewards.emplace_back(d_0);
         return ret;
-         */
             /*
             size_t pos = line.find(str);
             if (pos != std::string::npos) {
