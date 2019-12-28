@@ -75,6 +75,7 @@ modification follow.
 
 #include <torch/torch.h>
 #include <torch/script.h>
+#include <torch/autograd.h>
 #include <iostream>
 #include <random>
 #include <thread>
@@ -97,7 +98,7 @@ modification follow.
 const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
 const int ACTIONS = 31;
 const int HISTORY = 8;
-const int HIDDEN = 32;
+const int HIDDEN = 64;
 //const std::string PRINTABLE = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c";
 
 const std::string PRINTABLE = "abcdefghijklmnopqrstuvwxyz!,;. ";
@@ -244,9 +245,27 @@ typedef struct batch_in_s {
         return ret;
     }
 
+    static batch_in_s make_batch(torch::Tensor hidden_state, Action action, bool requires_grad=false) {
+        batch_in_s ret;
+        ret.batch = hidden_state.set_requires_grad(requires_grad).reshape({-1, HIDDEN});
+        ret.actions = {};
+        ret.actions.emplace_back(action.index);
+        return ret;
+    }
+
     static batch_in_s make_batch(Image_t &t) {
         batch_in_s ret;
         ret.batch = torch::tensor(t).reshape({-1,static_cast<long>(t.size())});
+        return ret;
+    }
+
+    static batch_in_s make_batch(std::vector<Image_t> &t) {
+        batch_in_s ret;
+        ret.batch = torch::tensor(t[0]).reshape({-1,static_cast<long>(t[0].size())});
+        for(int i = 1 ; i < t.size(); i++) {
+            torch::Tensor tensor = torch::tensor(t[i]).reshape({-1,static_cast<long>(t[i].size())});
+            ret.batch = torch::cat({ret.batch, tensor});
+        }
         return ret;
     }
 } batch_in_t;
