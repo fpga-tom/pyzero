@@ -2109,13 +2109,23 @@ torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, int 
 struct CustomCat {
 
     torch::Tensor tensor;
+    bool set;
 
-    CustomCat(torch::Tensor tensor) : tensor(tensor) {
+    CustomCat(torch::Tensor tensor) : tensor(tensor), set(true) {
+
+    }
+
+    CustomCat() : set(false){
 
     }
 
     CustomCat& operator+=(const CustomCat& other) {
-        tensor = torch::cat({tensor, other.tensor});
+        if(!set) {
+            tensor = other.tensor;
+            set = true;
+        } else {
+            tensor = torch::cat({tensor, other.tensor});
+        }
         return *this;
     }
 };
@@ -2181,28 +2191,38 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
         }
     }
 #if 1
-    CustomCat values_cat_all(predictions[0][0].tensor->value_tensor.reshape({1}));
-    CustomCat rewards_cat_all(predictions[0][0].tensor->reward_tensor.reshape({1}));
-    CustomCat logits_cat_all(predictions[0][0].tensor->policy_tensor.reshape({1, ACTIONS}));
-    CustomCat target_policies_cat_all(torch::tensor(batch[0].target[0].policy).reshape({1, ACTIONS}));
+//    CustomCat values_cat_all(predictions[0][0].tensor->value_tensor.reshape({1}));
+//    CustomCat rewards_cat_all(predictions[0][0].tensor->reward_tensor.reshape({1}));
+//    CustomCat logits_cat_all(predictions[0][0].tensor->policy_tensor.reshape({1, ACTIONS}));
+//    CustomCat target_policies_cat_all(torch::tensor(batch[0].target[0].policy).reshape({1, ACTIONS}));
 
-//#pragma omp declare reduction(custom: CustomCat : omp_out += omp_in) initializer(omp_priv = omp_orig)
+    CustomCat values_cat_all;
+    CustomCat rewards_cat_all;
+    CustomCat logits_cat_all;
+    CustomCat target_policies_cat_all;
+
+//#pragma omp declare reduction(custom: CustomCat : omp_out += omp_in)
 //#pragma omp parallel for num_threads(12) reduction(custom:values_cat_all) reduction(custom:rewards_cat_all) reduction(custom:logits_cat_all) reduction(custom:target_policies_cat_all)
     for (int i = 0; i < batch.size(); i++) {
         int start_index = 0;
-        if(i == 0) {
-            start_index = 1;
-        }
+//        if(i == 0) {
+//            start_index = 1;
+//        }
         if(start_index < predictions[i].size()) {
             std::vector<Target> targets = batch[i].target;
-            CustomCat values_cat(predictions[i][start_index].tensor->value_tensor.reshape({1}));
-            CustomCat rewards_cat(predictions[i][start_index].tensor->reward_tensor.reshape({1}));
-            CustomCat logits_cat(predictions[i][start_index].tensor->policy_tensor.reshape({1, ACTIONS}));
-            CustomCat target_policies_cat(torch::tensor(targets[start_index].policy).reshape({1, ACTIONS}));
+//            CustomCat values_cat(predictions[i][start_index].tensor->value_tensor.reshape({1}));
+//            CustomCat rewards_cat(predictions[i][start_index].tensor->reward_tensor.reshape({1}));
+//            CustomCat logits_cat(predictions[i][start_index].tensor->policy_tensor.reshape({1, ACTIONS}));
+//            CustomCat target_policies_cat(torch::tensor(targets[start_index].policy).reshape({1, ACTIONS}));
+
+            CustomCat values_cat;
+            CustomCat rewards_cat;
+            CustomCat logits_cat;
+            CustomCat target_policies_cat;
 
 
 //#pragma omp parallel for reduction(custom:values_cat) reduction(custom:rewards_cat) reduction(custom:logits_cat) reduction(custom:target_policies_cat)
-            for (int k = start_index + 1; k < std::min(predictions[i].size(), targets.size()); k++) {
+            for (int k = start_index; k < std::min(predictions[i].size(), targets.size()); k++) {
                 values_cat += predictions[i][k].tensor->value_tensor.reshape({1});
                 rewards_cat += predictions[i][k].tensor->reward_tensor.reshape({1});
                 logits_cat += predictions[i][k].tensor->policy_tensor.reshape({1, ACTIONS});
