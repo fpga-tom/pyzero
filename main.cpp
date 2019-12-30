@@ -658,6 +658,7 @@ struct Game {
             }
 
             assert(!isnan(value));
+            std::cout << value << std::endl;
 
             if(current_index < root_values.size()) {
 //                assert(child_visits[current_index].size() > 0);
@@ -907,6 +908,7 @@ struct BasicBlock : torch::nn::Module {
         if (!downsample->is_empty()){
             register_module("downsample", downsample);
         }
+
     }
 
     torch::Tensor forward(torch::Tensor x) {
@@ -1033,25 +1035,26 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         for(auto m: modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::LinearImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                     }
-//                    else if (p.key() == "bias"){
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
 //                        torch::nn::init::xavier_normal_(*p);
-//                    }
+                    }
                 }
             }
             if (m->name() == "torch::nn::EmbeddingImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::BatchNormImpl"){
@@ -1176,25 +1179,26 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         for(auto m: this->modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::LinearImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                     }
-//                    else if (p.key() == "bias"){
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
 //                        torch::nn::init::xavier_normal_(*p);
-//                    }
+                    }
                 }
             }
             if (m->name() == "torch::nn::EmbeddingImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             else if (m->name() == "torch::nn::BatchNormImpl"){
@@ -1239,15 +1243,17 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         y = bn2->forward(y);
         y = torch::relu(y);
         y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
-        y = fc2->forward(torch::relu(y));
+        y = torch::relu(y);
+        y = fc2->forward(y);
 //        y = torch::tanh(y);
-        y = y.clamp(-10, 10);
+        y = y.clamp(-1, 1);
 //        y = torch::tanh(fc2->forward(y));
 
         x = conv3->forward(tmp);
         x = bn3->forward(x);
         x = torch::relu(x);
         x = fc3->forward(x.view({x.sizes()[0], 1, -1}));
+        x = x.clamp(-1, 1);
 //        x = fc4->forward(torch::relu(x));
 
         return {x,y};
@@ -1288,7 +1294,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
     torch::nn::Conv1d conv2;
     torch::nn::BatchNorm bn2;
     torch::nn::Linear fc1;
-    torch::nn::Linear fc2;
+//    torch::nn::Linear fc2;
 
     torch::nn::Conv1d conv3;
     torch::nn::BatchNorm bn3;
@@ -1299,16 +1305,16 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
             : conv1(conv_options(1, 64, 3, 2, 1)),
               bn1(64),
               layer1(_make_layer(64, layers[0])),
-              layer2(_make_layer(128, layers[1], 2)),
+              layer2(_make_layer(128, layers[1], 1)),
               layer3(_make_layer(128, layers[2], 2)),
               layer4(_make_layer(128, layers[3], 2)),
 //              fc(1024 * Block::expansion, num_classes),
-              conv2(conv_options(128, 16,1,1,1)),
-              bn2(16),
-              fc1(64 * Block::expansion, 32),
-              fc2(32, 1),
-    conv3(conv_options(128, 16,1,1,1)),
-    bn3(16),
+              conv2(conv_options(128, 32,3,1,1)),
+              bn2(32),
+              fc1(64 * Block::expansion, 1),
+//              fc2(32, 1),
+    conv3(conv_options(128, 32,3,1,1)),
+    bn3(32),
     fc3(64 * Block::expansion, num_classes)
 //    fc4(128, num_classes)
     {
@@ -1322,7 +1328,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         register_module("conv2", conv2);
         register_module("bn2", bn2);
         register_module("fc1", fc1);
-        register_module("fc2", fc2);
+//        register_module("fc2", fc2);
 
         register_module("conv3", conv3);
         register_module("bn3", bn3);
@@ -1333,22 +1339,23 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         for(auto m: this->modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::LinearImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
+                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut, torch::nn::init::Nonlinearity::ReLU);
                     }
-//                    else if (p.key() == "bias"){
-//                        torch::nn::init::xavier_normal_(*p);
-//                    }
+                    else if (p.key() == "bias"){
+                        torch::nn::init::constant_(*p, 0);
+//                    torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn, torch::nn::init::Nonlinearity::ReLU);
+                    }
                 }
             }
-            else if (m->name() == "torch::nn::BatchNormImpl"){
+            if (m->name() == "torch::nn::BatchNormImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
                         torch::nn::init::constant_(*p, 1);
@@ -1369,7 +1376,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = bn1->forward(x);
         x = torch::relu(x);
         DUMP_LOG(x.sizes());
-        x = torch::max_pool1d(x, 3, 1, 1);
+        x = torch::max_pool1d(x, 3, 2, 1);
 
         x = layer1->forward(x);
         DUMP_LOG(x.sizes());
@@ -1380,20 +1387,21 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = layer4->forward(x);
         DUMP_LOG(x.sizes());
 
-        x = torch::avg_pool1d(x, 3, 3, 1);
+        x = torch::avg_pool1d(x, 3, 2, 1);
         torch::Tensor tmp = x;
         DUMP_LOG(x.sizes());
-        torch::Tensor y = x.view({x.sizes()[0], -1});
+//        torch::Tensor y = x.view({x.sizes()[0], -1});
 
 //        x = fc->forward(y);
-        y = conv2->forward(tmp);
+        torch::Tensor y = conv2->forward(tmp);
         DUMP_LOG(y.sizes());
         y = bn2->forward(y);
 
         y = torch::relu(y);
         y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
-        y =fc2->forward(torch::relu(y));
-        y = y.clamp(-10, 10);
+//        y = fc2->forward(torch::relu(y));
+//        y = torch::relu(y);
+        y = y.clamp(-1, 1);
 //        val = torch::tanh(val);
         DUMP_LOG(y.sizes());
 //        y = fc2->forward(y);
@@ -1404,7 +1412,7 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = fc3->forward(x.view({x.sizes()[0], 1, -1}));
 //        x = torch::relu(x);
 //        x = fc4->forward(x);
-        x = x.clamp(-10, 10);
+        x = x.clamp(-1, 1);
 
         DUMP_LOG(x.sizes());
         DUMP_LOG(y.sizes());
@@ -1434,15 +1442,15 @@ private:
 
 
 std::shared_ptr<ResNet_representation<BasicBlock>> resnet_representation(int num_classes){
-    return std::make_shared<ResNet_representation<BasicBlock>>(torch::IntList ({2, 2, 2, 2}), num_classes);
+    return std::make_shared<ResNet_representation<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 std::shared_ptr<ResNet_dynamics<BasicBlock>> resnet_dynamics(int num_classes){
-    return std::make_shared<ResNet_dynamics<BasicBlock>>(torch::IntList ({2, 2, 2, 2}), num_classes);
+    return std::make_shared<ResNet_dynamics<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 std::shared_ptr<ResNet_prediction<BasicBlock>> resnet_prediction(int num_classes){
-    return std::make_shared<ResNet_prediction<BasicBlock>>(torch::IntList ({2, 2, 2, 2}), num_classes);
+    return std::make_shared<ResNet_prediction<BasicBlock>>(torch::IntList ({3, 4, 6, 3}), num_classes);
 }
 
 
@@ -1552,7 +1560,9 @@ struct Network : Network_i {
             if(!is_train) {
                 auto acc = pt.accessor<float, 2>();
                 for (int i = 0; i < HIDDEN; i++) {
-                    hidden.emplace_back(acc[id][i]);
+                    auto a = acc[id][i];
+                    assert(!isnan(a));
+                    hidden.emplace_back(a);
                 }
             }
             Policy_t policy;
@@ -1560,7 +1570,9 @@ struct Network : Network_i {
             if(!is_train) {
                 auto acc1 = lt.accessor<float, 3>();
                 for (int i = 0; i < ACTIONS; i++) {
-                    policy.emplace_back(acc1[id][0][i]);
+                    auto a = acc1[id][0][i];
+                    assert(!isnan(a));
+                    policy.emplace_back(a);
                 }
             }
             float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
@@ -1591,7 +1603,9 @@ struct Network : Network_i {
             if(!is_train) {
                 auto acc = hidden_tensor.accessor<float, 3>();
                 for (int i = 0; i < HIDDEN; i++) {
-                    hidden.emplace_back(acc[id][0][i]);
+                    auto a = acc[id][0][i];
+                    assert(!isnan(a));
+                    hidden.emplace_back(a);
                 }
             }
             Policy_t policy;
@@ -1599,12 +1613,15 @@ struct Network : Network_i {
             if(!is_train) {
                 auto acc1 = lt.accessor<float, 3>();
                 for (int i = 0; i < ACTIONS; i++) {
-                    policy.emplace_back(acc1[id][0][i]);
+                    auto a = acc1[id][0][i];
+                    assert(!isnan(a));
+                    policy.emplace_back(a);
                 }
             }
 
             float r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx())[id].item<float>();
             float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
+            assert(!isnan(r));
             assert(!isnan(v));
             std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
             if(is_train) {
@@ -2280,8 +2297,14 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
 
         if(step % 10 == 0)
             std::cout << "\t\t loss: " << l.item<float>() << std::endl;
+
+    std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
         l.backward();
+    std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+    std::cout << "Time difference = " << std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count() << "[ms]" << std::endl;
         opt.step();
+
+
 #endif
 
 }
@@ -2292,8 +2315,8 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 
     std::vector<torch::Tensor> params = network->parameters();
 
-    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
-    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
+    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
+    .momentum(config.momentum).weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
 //        std::cout << i << "\t";
