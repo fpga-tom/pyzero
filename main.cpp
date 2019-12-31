@@ -485,7 +485,7 @@ struct Environment {
         if (seq.size() < 6) {
             return 0;
         }
-        std::cout << str << std::endl;
+//        std::cout << str << std::endl;
         while (f.good()) {
             getline(f, line);
             if(line.size() >= str.size()) {
@@ -499,12 +499,16 @@ struct Environment {
                     if(d_ > d) {
                         d_0 = d_0_;
                         d_1 = d_1_;
+                    } else if(d_1 == d_1_) {
+                        d_0 = std::max(d_0, d_0_);
+                    } else if(d_0 == d_0_) {
+                        d_1 = std::max(d_1, d_1_);
                     }
                 }
             }
         }
 
-        std::cout << d_0 << " " << d_1 << std::endl;
+        std::cout << str << " " << d_0 << " " << d_1 << std::endl;
         if(d_0 > d_1) {
             return -1;
         } else if(d_0 < d_1) {
@@ -2353,8 +2357,8 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 
     std::vector<torch::Tensor> params = network->parameters();
 
-    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
-    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
+    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
+    .momentum(config.momentum).weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
 //        std::cout << i << "\t";
