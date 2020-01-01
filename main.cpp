@@ -1647,7 +1647,11 @@ struct Network : Network_i {
             assert(!isnan(v));
             std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
             if(is_train) {
-                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output), torch::tensor({(float) 0}).to(ctx),
+                std::vector<float> f;
+                for(int kf = 0; kf < hidden_state_tensor.size(0); kf++) {
+                    f.emplace_back(0);
+                }
+                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output), torch::tensor(f).to(ctx),
                                                           std::get<0>(prediction_output), hidden_state_tensor);
             }
             ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden, tensor));
@@ -2449,10 +2453,10 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
         torch::Tensor target_values = torch::tensor(target_values_v[k]).view({-1, 1}).to(ctx);
         torch::Tensor target_rewards = torch::tensor(target_rewards_v[k]).view({-1, 1}).to(ctx);
 
-        torch::Tensor l1 = ((predictions[k].tensor->value_tensor - target_values).pow(2).mean(1)
-             + (predictions[k].tensor->reward_tensor - target_rewards).pow(2).mean(1)
+        torch::Tensor l1 = (torch::mse_loss(predictions[k].tensor->value_tensor.view({-1,1}),target_values)
+             + torch::mse_loss(predictions[k].tensor->reward_tensor.view({-1,1}) , target_rewards)
              + cross_entropy_loss(predictions[k].tensor->policy_tensor.view({-1, ACTIONS}),
-                                  target_policies_cat_all[k].tensor.to(ctx).view({-1, ACTIONS}), step, k))
+                                  target_policies_cat_all[k].tensor.to(ctx).view({-1, ACTIONS}), step, k).mean())
                 ;
         if(k == 0) {
             l = l1;
