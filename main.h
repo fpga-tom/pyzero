@@ -253,6 +253,16 @@ typedef struct batch_in_s {
         return ret;
     }
 
+    static batch_in_s make_batch(torch::Tensor hidden_state, std::vector<Action> action, bool requires_grad=false) {
+        batch_in_s ret;
+        ret.batch = hidden_state.set_requires_grad(requires_grad).reshape({-1, HIDDEN});
+        ret.actions = {};
+        for(int i = 0;i < action.size(); i++) {
+            ret.actions.emplace_back(action[i].index);
+        }
+        return ret;
+    }
+
     static batch_in_s make_batch(Image_t &t) {
         batch_in_s ret;
         ret.batch = torch::tensor(t).reshape({-1,static_cast<long>(t.size())});

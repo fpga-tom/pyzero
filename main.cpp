@@ -610,8 +610,8 @@ struct Game {
 
     Image_t make_image(int state_index) {
         Image_t r;
-        state_index = state_index < 0 ? (int)environment.seq.size() + state_index + 1: state_index;
-        int high = state_index;
+        state_index = state_index < 0 ? (int)environment.seq.size() + state_index: state_index;
+        int high = state_index + 1;
         int low = std::max(high - HISTORY, 0);
         std::copy(environment.seq.begin() + low, environment.seq.begin() + high , std::back_inserter(r));
         assert(r.size() == high);
@@ -650,7 +650,11 @@ struct Game {
 //                }
                 targets.emplace_back(Target(value, rewards[current_index], child_visits[current_index]));
             } else {
-                targets.emplace_back(Target(0, 0, {}));
+                std::vector<float> v;
+                for(int i = 0; i < ACTIONS; i++) {
+                    v.emplace_back(0);
+                }
+                targets.emplace_back(Target(0, 0, v));
             }
         }
         return targets;
@@ -982,10 +986,10 @@ const int BottleNeck::expansion = 4;
 
 template <class Block> struct ResNet_representation : torch::nn::Module {
 
-    int64_t inplanes = 32;
+    int64_t inplanes = 8;
     torch::nn::Conv1d conv1;
     torch::nn::BatchNorm bn1;
-//    torch::nn::Sequential layer1;
+    torch::nn::Sequential layer1;
 //    torch::nn::Sequential layer2;
 //    torch::nn::Sequential layer3;
 //    torch::nn::Sequential layer4;
@@ -994,18 +998,18 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
 
     ResNet_representation(torch::IntList layers, int64_t num_classes=1000)
             :
-            conv1(conv_options(HISTORY, 32, 3, 2, 1)),
-              bn1(32),
-//              layer1(_make_layer(32, layers[0])),
+            conv1(conv_options(HISTORY, 8, 3, 2, 1)),
+              bn1(8),
+              layer1(_make_layer(8, layers[0])),
 //              layer2(_make_layer(64, layers[1], 2)),
 //              layer3(_make_layer(64, layers[2], 2)),
 //              layer4(_make_layer(64, layers[3], 2)),
-              fc(256 * Block::expansion, num_classes),
+              fc(64 * Block::expansion, num_classes),
               embedding(torch::nn::Embedding(ACTIONS+1, ACTIONS + 1))
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
-//        register_module("layer1", layer1);
+        register_module("layer1", layer1);
 //        register_module("layer2", layer2);
 //        register_module("layer3", layer3);
 //        register_module("layer4", layer4);
@@ -1013,24 +1017,13 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
         register_module("embedding", embedding);
 //        init_x(conv1->parameters());
 
-
-        torch::Tensor t;
-        for(int i = 0; i < ACTIONS+1; i++) {
-            std::vector<float> v;
-            for(int j = 0; j < ACTIONS + 1; j++) {
-                if(j == i) {
-                    v.emplace_back(1);
-                } else {
-                    v.emplace_back(0);
-                }
-            }
-            if (i == 0) {
-                t = torch::tensor(v).reshape({-1, ACTIONS + 1});
-            } else {
-                t = torch::cat({t, torch::tensor(v).reshape({-1, ACTIONS + 1})});
+        for(auto p : fc->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::xavier_uniform_(*p);
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
             }
         }
-//        embedding->weight=t.to(get_ctx()).set_requires_grad(false);
         // Initializing weights
         for(auto m: modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
@@ -1040,24 +1033,24 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
                             torch::nn::init::Nonlinearity::ReLU);
                 }
             }
-            if (m->name() == "torch::nn::LinearImpl"){
-                for (auto p: m->named_parameters()){
-                    if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
-                                torch::nn::init::Nonlinearity::ReLU);
-                    }
-                    else if (p.key() == "bias"){
-                        torch::nn::init::constant_(*p, 0);
-//                        torch::nn::init::xavier_normal_(*p);
-                    }
-                }
-            }
+//            if (m->name() == "torch::nn::LinearImpl"){
+//                for (auto p: m->named_parameters()){
+//                    if (p.key() == "weight"){
+////                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
+//                                torch::nn::init::Nonlinearity::ReLU);
+//                    }
+//                    else if (p.key() == "bias"){
+//                        torch::nn::init::constant_(*p, 0);
+////                        torch::nn::init::xavier_normal_(*p);
+//                    }
+//                }
+//            }
             if (m->name() == "torch::nn::EmbeddingImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanIn,
-                            torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanIn,
+//                            torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::BatchNormImpl"){
@@ -1075,15 +1068,14 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
 
 
     torch::Tensor forward(torch::Tensor x){
-
         torch::Tensor emb = embedding(x);
-        x = emb.view({-1,HISTORY, ACTIONS + 1});
+        x = emb.view({-1, HISTORY, ACTIONS + 1});
         x = conv1->forward(x);
         x = bn1->forward(x);
         x = torch::relu(x);
         x = torch::avg_pool1d(x, 3, 2, 1);
 
-//        x = layer1->forward(x);
+        x = layer1->forward(x);
 //        x = layer2->forward(x);
 //        x = layer3->forward(x);
 //        x = layer4->forward(x);
@@ -1119,10 +1111,10 @@ private:
 
 template <class Block> struct ResNet_dynamics : torch::nn::Module {
 
-    int64_t inplanes = 64;
-//    torch::nn::Conv1d conv1;
-//    torch::nn::BatchNorm bn1;
-//    torch::nn::Sequential layer1;
+    int64_t inplanes = 8;
+    torch::nn::Conv1d conv1;
+    torch::nn::BatchNorm bn1;
+    torch::nn::Sequential layer1;
 //    torch::nn::Sequential layer2;
 //    torch::nn::Sequential layer3;
 //    torch::nn::Sequential layer4;
@@ -1142,27 +1134,27 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
 
     ResNet_dynamics(torch::IntList layers, int64_t num_classes=1000)
             :
-//            conv1(conv_options(1, 64, 3, 1, 1)),
-//              bn1(64),
-//              layer1(_make_layer(64, layers[0], 1)),
+            conv1(conv_options(1, 8, 3, 2, 1)),
+              bn1(8),
+              layer1(_make_layer(8, layers[0], 1)),
 //              layer2(_make_layer(128, layers[1], 2)),
 //              layer3(_make_layer(128, layers[2], 2)),
 //              layer4(_make_layer(128, layers[3], 2)),
 //              fc(512 * Block::expansion, num_classes),
 //              fc1(512 * Block::expansion, 1),
-              conv2(conv_options(1 , 16,3,2,1)),
+              conv2(conv_options(8 , 16,3,2,1)),
               bn2(16),
-              fc1(256 * Block::expansion, 64),
+              fc1(192 * Block::expansion, 64),
               fc2(64, 1),
-              conv3(conv_options(1 , 16,3,2,1)),
+              conv3(conv_options(8 , 16,3,2,1)),
               bn3(16),
-              fc3(256 * Block::expansion, 64),
+              fc3(192 * Block::expansion, 64),
               fc4(64, num_classes),
               embedding(torch::nn::Embedding(ACTIONS+1, ACTIONS+1))
     {
-//        register_module("conv1", conv1);
-//        register_module("bn1", bn1);
-//        register_module("layer1", layer1);
+        register_module("conv1", conv1);
+        register_module("bn1", bn1);
+        register_module("layer1", layer1);
 //        register_module("layer2", layer2);
 //        register_module("layer3", layer3);
 //        register_module("layer4", layer4);
@@ -1180,51 +1172,64 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         register_module("fc3", fc3);
         register_module("fc4", fc4);
 
-        torch::Tensor t;
-        for(int i = 0; i < ACTIONS+1; i++) {
-            std::vector<float> v;
-            for(int j = 0; j < ACTIONS + 1; j++) {
-                if(j == i) {
-                    v.emplace_back(1);
-                } else {
-                    v.emplace_back(0);
-                }
-            }
-            if (i == 0) {
-                t = torch::tensor(v).reshape({-1, ACTIONS + 1});
-            } else {
-                t = torch::cat({t, torch::tensor(v).reshape({-1, ACTIONS + 1})});
+
+
+        for(auto p : fc1->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut,
+                                              torch::nn::init::Nonlinearity::ReLU);
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
             }
         }
-//        embedding->weight=t.to(get_ctx()).set_requires_grad(false);
+
+        for(auto p : fc3->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanOut,
+                                              torch::nn::init::Nonlinearity::ReLU);
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
+            }
+        }
+
+        for(auto p : fc4->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::xavier_uniform_(*p);
+
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
+            }
+        }
 
         // Initializing weights
         for(auto m: this->modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
                 for (auto p: m->parameters()){
 //                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanIn,
+                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut,
                             torch::nn::init::Nonlinearity::ReLU);
                 }
             }
-            if (m->name() == "torch::nn::LinearImpl"){
-                for (auto p: m->named_parameters()){
-                    if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
-                                torch::nn::init::Nonlinearity::ReLU);
-                    }
-                    else if (p.key() == "bias"){
-                        torch::nn::init::constant_(*p, 0);
-//                        torch::nn::init::xavier_normal_(*p);
-                    }
-                }
-            }
+
+//            if (m->name() == "torch::nn::LinearImpl"){
+//                for (auto p: m->named_parameters()){
+//                    if (p.key() == "weight"){
+////                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
+//                                torch::nn::init::Nonlinearity::ReLU);
+//                    }
+//                    else if (p.key() == "bias"){
+//                        torch::nn::init::constant_(*p, 0);
+////                        torch::nn::init::xavier_normal_(*p);
+//                    }
+//                }
+//            }
+
             if (m->name() == "torch::nn::EmbeddingImpl"){
                 for (auto p: m->parameters()){
-//                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanIn,
-                            torch::nn::init::Nonlinearity::ReLU);
+                    torch::nn::init::xavier_normal_(p);
+//                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut,
+//                            torch::nn::init::Nonlinearity::ReLU);
                 }
             }
             if (m->name() == "torch::nn::BatchNormImpl"){
@@ -1245,12 +1250,12 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         action = embedding->forward(action);
         x = torch::cat({x.view({-1, HIDDEN}), action.view({-1, ACTIONS + 1})}, 1);
         x = x.view({-1,1, HIDDEN + ACTIONS + 1});
-//        x = conv1->forward();
-//        x = bn1->forward(x);
-//        x = torch::relu(x);
-//        x = torch::max_pool1d(x, 3, 1, 1);
+        x = conv1->forward(x);
+        x = bn1->forward(x);
+        x = torch::relu(x);
+        x = torch::avg_pool1d(x, 3, 1, 1);
 //
-//        x = layer1->forward(x);
+        x = layer1->forward(x);
 //        x = layer2->forward(x);
 //        x = layer3->forward(x);
 //        x = layer4->forward(x);
@@ -1269,8 +1274,9 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         torch::Tensor y = conv2->forward(tmp);
         y = bn2->forward(y);
         y = torch::relu(y);
-        y = torch::max_pool1d(y, 7, 3, 2);
-        y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
+        y = torch::avg_pool1d(y, 3, 2, 1);
+        y = y.view({y.sizes()[0], 1, -1});
+        y = fc1->forward(y);
         y = torch::relu(y);
         y = fc2->forward(y);
 //        y = torch::tanh(y);
@@ -1280,7 +1286,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
         x = conv3->forward(tmp);
         x = bn3->forward(x);
         x = torch::relu(x);
-        x = torch::max_pool1d(x, 7, 3, 2);
+        x = torch::avg_pool1d(x, 3, 2, 1);
         x = fc3->forward(x.view({x.sizes()[0], 1, -1}));
 //        x = x.clamp(-1, 1);
         x = fc4->forward(torch::relu(x));
@@ -1312,10 +1318,10 @@ private:
 
 template <class Block> struct ResNet_prediction : torch::nn::Module {
 
-    int64_t inplanes = 64;
-//    torch::nn::Conv1d conv1;
-//    torch::nn::BatchNorm bn1;
-//    torch::nn::Sequential layer1;
+    int64_t inplanes = 8;
+    torch::nn::Conv1d conv1;
+    torch::nn::BatchNorm bn1;
+    torch::nn::Sequential layer1;
 //    torch::nn::Sequential layer2;
 //    torch::nn::Sequential layer3;
 //    torch::nn::Sequential layer4;
@@ -1333,25 +1339,25 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 
     ResNet_prediction(torch::IntList layers, int64_t num_classes=1000)
             :
-//            conv1(conv_options(1, 32, 7, 3, 2)),
-//              bn1(32),
-//              layer1(_make_layer(64, layers[0])),
+            conv1(conv_options(1, 8, 7, 3, 2)),
+              bn1(8),
+              layer1(_make_layer(8, layers[0])),
 //              layer2(_make_layer(128, layers[1], 1)),
 //              layer3(_make_layer(128, layers[2], 2)),
 //              layer4(_make_layer(128, layers[3], 2)),
 //              fc(1024 * Block::expansion, num_classes),
-              conv2(conv_options(1, 8,5,3,2)),
+              conv2(conv_options(8, 8,5,3,2)),
               bn2(8),
-              fc1(88 * Block::expansion, 1),
+              fc1(16 * Block::expansion, 1),
 //              fc2(32, 1),
-    conv3(conv_options(1, 8,5,3,2)),
-    bn3(8),
-    fc3(88 * Block::expansion, num_classes)
+    conv3(conv_options(8, 16,5,3,2)),
+    bn3(16),
+    fc3(32 * Block::expansion, num_classes)
 //    fc4(32, num_classes)
     {
-//        register_module("conv1", conv1);
-//        register_module("bn1", bn1);
-//        register_module("layer1", layer1);
+        register_module("conv1", conv1);
+        register_module("bn1", bn1);
+        register_module("layer1", layer1);
 //        register_module("layer2", layer2);
 //        register_module("layer3", layer3);
 //        register_module("layer4", layer4);
@@ -1366,28 +1372,50 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         register_module("fc3", fc3);
 //        register_module("fc4", fc4);
 
+
+
+        for(auto p : fc1->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::xavier_uniform_(*p);
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
+            }
+        }
+
+        for(auto p : fc3->named_parameters()) {
+            if(p.key() == "weight")
+                torch::nn::init::xavier_uniform_(*p);
+
+            if (p.key() == "bias"){
+                torch::nn::init::constant_(*p, 0);
+            }
+        }
+
+
+
+
         // Initializing weights
         for(auto m: this->modules(false)){
             if (m->name() == "torch::nn::Conv1dImpl"){
                 for (auto p: m->parameters()){
 //                    torch::nn::init::xavier_normal_(p);
-                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanIn,
+                    torch::nn::init::kaiming_uniform_(p, 0, torch::nn::init::FanMode::FanOut,
                             torch::nn::init::Nonlinearity::ReLU);
                 }
             }
-            if (m->name() == "torch::nn::LinearImpl"){
-                for (auto p: m->named_parameters()){
-                    if (p.key() == "weight"){
-//                        torch::nn::init::xavier_normal_(*p);
-                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
-                                torch::nn::init::Nonlinearity::ReLU);
-                    }
-                    else if (p.key() == "bias"){
-                        torch::nn::init::constant_(*p, 1);
-//                    torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn, torch::nn::init::Nonlinearity::ReLU);
-                    }
-                }
-            }
+//            if (m->name() == "torch::nn::LinearImpl"){
+//                for (auto p: m->named_parameters()){
+//                    if (p.key() == "weight"){
+////                        torch::nn::init::xavier_normal_(*p);
+//                        torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn,
+//                                torch::nn::init::Nonlinearity::ReLU);
+//                    }
+//                    else if (p.key() == "bias"){
+//                        torch::nn::init::constant_(*p, 1);
+////                    torch::nn::init::kaiming_uniform_(*p, 0, torch::nn::init::FanMode::FanIn, torch::nn::init::Nonlinearity::ReLU);
+//                    }
+//                }
+//            }
             if (m->name() == "torch::nn::BatchNormImpl"){
                 for (auto p: m->named_parameters()){
                     if (p.key() == "weight"){
@@ -1405,13 +1433,13 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 
         x = x.view({-1, 1, HIDDEN});
         DUMP_LOG(x.sizes());
-//        x = conv1->forward(x);
-//        x = bn1->forward(x);
-//        x = torch::relu(x);
+        x = conv1->forward(x);
+        x = bn1->forward(x);
+        x = torch::relu(x);
 //        DUMP_LOG(x.sizes());
-//        x = torch::max_pool1d(x, 3, 2, 1);
+        x = torch::avg_pool1d(x, 3, 2, 1);
 //
-//        x = layer1->forward(x);
+        x = layer1->forward(x);
 //        DUMP_LOG(x.sizes());
 //        x = layer2->forward(x);
 //        DUMP_LOG(x.sizes());
@@ -1430,8 +1458,12 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
 //        DUMP_LOG(y.sizes());
         y = bn2->forward(y);
 
+
+
         y = torch::relu(y);
-        y = torch::max_pool1d(y, 5, 2, 2);
+        y = torch::avg_pool1d(y, 5, 2, 2);
+
+//        tmp = y;
         y = fc1->forward(y.view({y.sizes()[0], 1, -1}));
 //        y = fc2->forward(torch::relu(y));
 //        y = torch::relu(y);
@@ -1443,7 +1475,8 @@ template <class Block> struct ResNet_prediction : torch::nn::Module {
         x = conv3->forward(tmp);
         x = bn3->forward(x);
         x = torch::relu(x);
-        x = torch::max_pool1d(x, 5, 2, 2);
+//        x = tmp;
+        x = torch::avg_pool1d(x, 5, 2, 2);
         x = fc3->forward(x.view({x.sizes()[0], 1, -1}));
 //        x = torch::relu(x);
 //        x = fc4->forward(x);
@@ -1589,7 +1622,7 @@ struct Network : Network_i {
 
         batch_out_t ret;
         ret.out = {};
-        for(int id = 0; id < hidden_state_tensor.size(0); id++) {
+        for(int id = 0; id < batch.out.size(); id++) {
             HiddenState_t hidden;
 
             if(!is_train) {
@@ -1614,8 +1647,8 @@ struct Network : Network_i {
             assert(!isnan(v));
             std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
             if(is_train) {
-                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output)[id], torch::tensor({(float) 0}).to(ctx),
-                                                          std::get<0>(prediction_output)[id], hidden_state_tensor[id]);
+                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output), torch::tensor({(float) 0}).to(ctx),
+                                                          std::get<0>(prediction_output), hidden_state_tensor);
             }
             ret.out.emplace_back(NetworkOutput(v, 0, policy, hidden, tensor));
         }
@@ -1627,16 +1660,24 @@ struct Network : Network_i {
                                                                                         torch::tensor(batch.actions).to(ctx));
         std::tuple<torch::Tensor, torch::Tensor>  prediction_output = prediction->forward(std::get<0>(hidden_state_tensor));
 
-        torch::Tensor hidden_tensor = std::get<0>(hidden_state_tensor).to(get_cpu_ctx());
+        torch::Tensor hidden_tensor = std::get<0>(hidden_state_tensor);
+        torch::Tensor hidden_tensor_cpu;
+        if(!is_train) {
+            hidden_tensor_cpu = hidden_tensor.to(get_cpu_ctx());
+        }
         DUMP_LOG(hidden_tensor.sizes())
-        torch::Tensor lt = std::get<0>(prediction_output).to(get_cpu_ctx());
+        torch::Tensor lt = std::get<0>(prediction_output);
+        torch::Tensor lt_cpu;
+        if(!is_train) {
+            lt_cpu = lt.to(get_cpu_ctx());
+        }
         DUMP_LOG(lt.sizes());
         batch_out_t ret;
         ret.out = {};
         for(int id = 0; id < hidden_tensor.size(0); id++) {
             HiddenState_t hidden;
             if(!is_train) {
-                auto acc = hidden_tensor.accessor<float, 3>();
+                auto acc = hidden_tensor_cpu.accessor<float, 3>();
                 for (int i = 0; i < HIDDEN; i++) {
                     auto a = acc[id][0][i];
                     assert(!isnan(a));
@@ -1646,7 +1687,7 @@ struct Network : Network_i {
             Policy_t policy;
 
             if(!is_train) {
-                auto acc1 = lt.accessor<float, 3>();
+                auto acc1 = lt_cpu.accessor<float, 3>();
                 for (int i = 0; i < ACTIONS; i++) {
                     auto a = acc1[id][0][i];
                     assert(!isnan(a));
@@ -1654,14 +1695,27 @@ struct Network : Network_i {
                 }
             }
 
-            float r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx())[id].item<float>();
-            float v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
-            assert(!isnan(r));
-            assert(!isnan(v));
+            float r = 0;
+            float v = 0;
             std::shared_ptr<NetworkOutputTensor> tensor = nullptr;
             if(is_train) {
-                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output)[id], std::get<1>(hidden_state_tensor)[id],
-                                                          std::get<0>(prediction_output)[id], std::get<0>(hidden_state_tensor)[id]);
+//                auto value_tensor_acc = std::get<1>(prediction_output).accessor<float,3>();
+//                auto reward_tensor_acc = std::get<1>(hidden_state_tensor).accessor<float,3>();
+//                auto policy_tensor_acc = std::get<0>(prediction_output).accessor<float, 3>();
+//                auto hidden_tensor_acc = std::get<0>(hidden_state_tensor).accessor<float,3>();
+
+                tensor = NetworkOutputTensor::make_tensor(std::get<1>(prediction_output),
+                        std::get<1>(hidden_state_tensor),
+                                                          std::get<0>(prediction_output),
+                                                          std::get<0>(hidden_state_tensor));
+//                tensor = NetworkOutputTensor::make_tensor(value_tensor_acc[id], reward_tensor_acc[id], policy_tensor_acc[id], hidden_tensor_acc[id]);
+
+                ;
+            } else {
+                r = std::get<1>(hidden_state_tensor).to(get_cpu_ctx())[id].item<float>();
+                v = std::get<1>(prediction_output).to(get_cpu_ctx())[id].item<float>();
+                assert(!isnan(r));
+                assert(!isnan(v));
             }
             ret.out.emplace_back( NetworkOutput(v, r, policy, hidden, tensor));
         }
@@ -1842,6 +1896,17 @@ struct BatchInference : Inference_i {
         batch_in_t ret;
         ret.out = {};
         ret.actions = {};
+
+        for(int i = 0; i < batch.size(); i++) {
+            std::copy(batch[i].actions.begin(), batch[i].actions.end(), std::back_inserter(ret.actions));
+            std::copy(batch[i].out.begin(), batch[i].out.end(), std::back_inserter(ret.out));
+            if(i == 0) {
+                ret.batch = batch[i].batch;
+            } else {
+                ret.batch = torch::cat({ret.batch, batch[i].batch});
+            }
+        }
+        /*
         ret.out.emplace_back(batch[0].out[0]);
         if(batch[0].actions.size() > 0) {
             assert(batch[0].actions.size() == 1);
@@ -1858,6 +1923,7 @@ struct BatchInference : Inference_i {
 
         }
         ret.batch = t;
+         */
         return ret;
     }
 
@@ -2156,11 +2222,11 @@ void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
     }
 }
 
-torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, int step) {
+torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, int step, int k) {
     torch::Tensor t = input - input.max_values(1).view({-1, 1});
     torch::Tensor r = -(target * (t - torch::log(torch::exp(t).sum(1)).view({-1,1}))).sum(1);
     torch::Tensor entropy = -(target * torch::log(target+1e-12)).sum(1).mean();
-    if(step % 10 == 0)
+    if(step % 10 == 0 && k == 0)
         std::cout << step << " entropy: " << entropy.item<float>() << " cross_entropy: " << r.mean().item<float>();
     return r;
 //    return -(target *(torch::log_softmax(input, 1))).sum(1).mean();
@@ -2196,149 +2262,205 @@ struct CustomCat {
 void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx, int step) {
 
     torch::Tensor values_v;
-    std::vector<float> target_values_v;
+    std::vector<std::vector<float>> target_values_v;
     torch::Tensor rewards_v;
-    std::vector<float> target_rewards_v;
+    std::vector<std::vector<float>> target_rewards_v;
     torch::Tensor logits_v;
     torch::Tensor target_policies_v;
     torch::Tensor scale_v;
 
 
-
     std::vector<NetworkOutput> network_output_vector(batch.size());
-    std::vector<std::vector<NetworkOutput>> predictions(batch.size());
+    std::vector<NetworkOutput> predictions;
     std::vector<std::vector<float>> scales_b(batch.size());
 
     DUMP_LOG(batch.size())
 //#pragma omp parallel num_threads(12)  default(none) shared(batch, network, network_output_vector, predictions, scales_b)
 //    {
 //#pragma omp for schedule(static)
-        std::vector<Image_t> img;
-        for (int i = 0; i < batch.size(); ++i) {
-            Image_t image = batch[i].image;
-            img.emplace_back(image);
-        }
+    std::vector<Image_t> img;
+    for (int i = 0; i < batch.size(); ++i) {
+        Image_t image = batch[i].image;
+        img.emplace_back(image);
+    }
 
-            batch_in_s b = batch_in_s::make_batch(img);
-            batch_out_t network_output = network->initial_inference(b);
+    batch_in_s b = batch_in_s::make_batch(img);
+    batch_out_t network_output = network->initial_inference(b);
+    predictions.emplace_back(network_output.network_output());
 
-            for(int i = 0; i < batch.size(); i++) {
-//                network_output_vector[i] = network_output[i];
+    for (int i = 0; i < batch.size(); i++) {
 
-                predictions[i].emplace_back(network_output.out[i]);
-                scales_b[i].emplace_back(1);
-            }
+//                predictions[i].emplace_back(network_output.out[i]);
+        scales_b[i].emplace_back(1);
+    }
 //        }
 //    }
 
-#pragma omp parallel num_threads(64) default(none) shared(batch, network, network_output_vector, predictions, scales_b, network_output)
-    {
-#pragma omp for schedule(dynamic)
+//#pragma omp parallel num_threads(64) default(none) shared(batch, network, network_output_vector, predictions, scales_b, network_output)
+//#pragma omp for schedule(dynamic)
+    torch::Tensor hidden_state;
+    for (int j = 0; j < 6; j++) {
+
+        std::vector<Action> actions;
         for (int i = 0; i < batch.size(); i++) {
 
-            ActionList_t actions = batch[i].action;
+            ActionList_t acts = batch[i].action;
 
-            torch::Tensor hidden_state = network_output.out[i].tensor->hidden_tensor;
-            for (int j = 0; j < actions.size(); j++) {
-
-                batch_in_s b = batch_in_s::make_batch(hidden_state, actions[j], true);
-                NetworkOutput network_output_1 = network->recurrent_inference(b).network_output();
-                predictions[i].emplace_back(network_output_1);
-                scales_b[i].emplace_back(1. / actions.size());
-//                scale_v = torch::cat({scale_v, torch::tensor((float) 1./actions.size())});
-                hidden_state = network_output_1.tensor->hidden_tensor;
+            if (j < acts.size()) {
+                actions.emplace_back(acts[j]);
+            } else {
+                actions.emplace_back(ACTIONS);
             }
         }
+
+        if (j == 0) {
+            hidden_state = network_output.network_output().tensor->hidden_tensor;
+        }
+
+        batch_in_s b = batch_in_s::make_batch(hidden_state, actions, true);
+        NetworkOutput network_output_1 = network->recurrent_inference(b).network_output();
+        predictions.emplace_back(network_output_1);
+        hidden_state = network_output_1.tensor->hidden_tensor;
+
     }
-#if 1
-//    CustomCat values_cat_all(predictions[0][0].tensor->value_tensor.reshape({1}));
-//    CustomCat rewards_cat_all(predictions[0][0].tensor->reward_tensor.reshape({1}));
-//    CustomCat logits_cat_all(predictions[0][0].tensor->policy_tensor.reshape({1, ACTIONS}));
-//    CustomCat target_policies_cat_all(torch::tensor(batch[0].target[0].policy).reshape({1, ACTIONS}));
+#if 0
+    //    CustomCat values_cat_all(predictions[0][0].tensor->value_tensor.reshape({1}));
+    //    CustomCat rewards_cat_all(predictions[0][0].tensor->reward_tensor.reshape({1}));
+    //    CustomCat logits_cat_all(predictions[0][0].tensor->policy_tensor.reshape({1, ACTIONS}));
+    //    CustomCat target_policies_cat_all(torch::tensor(batch[0].target[0].policy).reshape({1, ACTIONS}));
 
-    CustomCat values_cat_all;
-    CustomCat rewards_cat_all;
-    CustomCat logits_cat_all;
-    CustomCat target_policies_cat_all;
-    CustomCat scale_cat_all;
+        CustomCat values_cat_all;
+        CustomCat rewards_cat_all;
+        CustomCat logits_cat_all;
+        CustomCat target_policies_cat_all;
+        CustomCat scale_cat_all;
 
-#pragma omp declare reduction(custom: CustomCat : omp_out += omp_in)
-#pragma omp parallel for num_threads(64) reduction(custom:values_cat_all) reduction(custom:rewards_cat_all) reduction(custom:logits_cat_all) reduction(custom:target_policies_cat_all) reduction(custom:scale_cat_all)
-    for (int i = 0; i < batch.size(); i++) {
-        int start_index = 0;
-//        if(i == 0) {
-//            start_index = 1;
-//        }
-        if(start_index < predictions[i].size()) {
+    //#pragma omp declare reduction(custom: CustomCat : omp_out += omp_in)
+    //#pragma omp parallel for num_threads(64) reduction(custom:values_cat_all) reduction(custom:rewards_cat_all) reduction(custom:logits_cat_all) reduction(custom:target_policies_cat_all) reduction(custom:scale_cat_all)
+        for (int i = 0; i < batch.size(); i++) {
+            int start_index = 0;
+    //        if(i == 0) {
+    //            start_index = 1;
+    //        }
+                std::vector<Target> targets = batch[i].target;
+    //            CustomCat values_cat(predictions[i][start_index].tensor->value_tensor.reshape({1}));
+    //            CustomCat rewards_cat(predictions[i][start_index].tensor->reward_tensor.reshape({1}));
+    //            CustomCat logits_cat(predictions[i][start_index].tensor->policy_tensor.reshape({1, ACTIONS}));
+    //            CustomCat target_policies_cat(torch::tensor(targets[start_index].policy).reshape({1, ACTIONS}));
+
+                CustomCat values_cat;
+                CustomCat rewards_cat;
+                CustomCat logits_cat;
+                CustomCat target_policies_cat;
+                CustomCat scale_cat;
+
+
+    //#pragma omp parallel for reduction(custom:values_cat) reduction(custom:rewards_cat) reduction(custom:logits_cat) reduction(custom:target_policies_cat)
+                for (int k = start_index; k < std::min(predictions[i].size(), targets.size()); k++) {
+                    values_cat += predictions[i][k].tensor->value_tensor.view({1});
+                    rewards_cat += predictions[i][k].tensor->reward_tensor.view({1});
+                    logits_cat += predictions[i][k].tensor->policy_tensor.view({1, ACTIONS});
+                    target_policies_cat += torch::tensor(targets[k].policy).view({1, ACTIONS});
+                    scale_cat += torch::tensor((float) scales_b[i][k]);
+                }
+
+
+    //#pragma omp ordered
+    //        {
+                values_cat_all += values_cat;
+                rewards_cat_all += rewards_cat;
+                logits_cat_all += logits_cat;
+                target_policies_cat_all += target_policies_cat;
+                scale_cat_all += scale_cat;
+    //        }
+        }
+
+
+        for (int i = 0; i < batch.size(); i++) {
+
+            Image_t image = batch[i].image;
+
             std::vector<Target> targets = batch[i].target;
-//            CustomCat values_cat(predictions[i][start_index].tensor->value_tensor.reshape({1}));
-//            CustomCat rewards_cat(predictions[i][start_index].tensor->reward_tensor.reshape({1}));
-//            CustomCat logits_cat(predictions[i][start_index].tensor->policy_tensor.reshape({1, ACTIONS}));
-//            CustomCat target_policies_cat(torch::tensor(targets[start_index].policy).reshape({1, ACTIONS}));
-
-            CustomCat values_cat;
-            CustomCat rewards_cat;
-            CustomCat logits_cat;
-            CustomCat target_policies_cat;
-            CustomCat scale_cat;
 
 
-//#pragma omp parallel for reduction(custom:values_cat) reduction(custom:rewards_cat) reduction(custom:logits_cat) reduction(custom:target_policies_cat)
-            for (int k = start_index; k < std::min(predictions[i].size(), targets.size()); k++) {
-                values_cat += predictions[i][k].tensor->value_tensor.view({1});
-                rewards_cat += predictions[i][k].tensor->reward_tensor.view({1});
-                logits_cat += predictions[i][k].tensor->policy_tensor.view({1, ACTIONS});
-                target_policies_cat += torch::tensor(targets[k].policy).view({1, ACTIONS});
-                scale_cat += torch::tensor((float) scales_b[i][k]);
+            for (int k = 0; k < std::min(predictions[i].size()  , targets.size()); k++) {
+                target_values_v.emplace_back(targets[k].value);
+                target_rewards_v.emplace_back(targets[k].reward);
+
             }
-
-
-            values_cat_all += values_cat;
-            rewards_cat_all += rewards_cat;
-            logits_cat_all += logits_cat;
-            target_policies_cat_all += target_policies_cat;
-            scale_cat_all += scale_cat;
         }
+
+
+            torch::Tensor values = values_cat_all.tensor.view({-1, 1}).to(ctx);
+            torch::Tensor target_values = torch::tensor(target_values_v).view({-1, 1}).to(ctx);
+            torch::Tensor rewards = rewards_cat_all.tensor.view({-1, 1}).to(ctx);
+            torch::Tensor target_rewards = torch::tensor(target_rewards_v).view({-1, 1}).to(ctx);
+            torch::Tensor logits = logits_cat_all.tensor.to(ctx);
+            torch::Tensor target_policies = target_policies_cat_all.tensor.to(ctx);
+            torch::Tensor scale = scale_cat_all.tensor.view({-1, 1}).to(ctx);
+
+    //        std::cout << values.sizes() << std::endl;
+    //        std::cout << target_values.sizes() << std::endl;
+            torch::Tensor l = (((values - target_values).pow(2).mean(1)
+                                + (rewards - target_rewards).pow(2).mean(1)
+                                + cross_entropy_loss(logits, target_policies, step)) * scale).mean();
+    //        std::cout << target_policies.sizes() << std::endl;
+    //        torch::Tensor l = (cross_entropy_loss(logits, target_policies)).mean();
+#endif
+    for (int k = 0; k < 6; k++) {
+        std::vector<float> target_values_v_tmp;
+        std::vector<float> target_rewards_v_tmp;
+        for (int i = 0; i < batch.size(); i++) {
+
+            std::vector<Target> targets = batch[i].target;
+
+
+//        for (int k = 0; k < targets.size(); k++) {
+            target_values_v_tmp.emplace_back(targets[k].value);
+            target_rewards_v_tmp.emplace_back(targets[k].reward);
+
+//        }
+        }
+
+        target_values_v.emplace_back(target_values_v_tmp);
+        target_rewards_v.emplace_back(target_rewards_v_tmp);
     }
 
+    std::vector<CustomCat> target_policies_cat_all;
 
-    for (int i = 0; i < batch.size(); i++) {
+    for (int k = 0; k < 6; k++) {
+        CustomCat target_policies_cat;
+        for (int i = 0; i < batch.size(); i++) {
 
-        Image_t image = batch[i].image;
-
-        std::vector<Target> targets = batch[i].target;
+            std::vector<Target> targets = batch[i].target;
 
 
-        for (int k = 0; k < std::min(predictions[i].size()  , targets.size()); k++) {
-//            if (i == 0 && k == 0) {
-//                scale_v = torch::tensor((float) scales_b[i][k]);
-//            } else {
-//                scale_v = torch::cat({scale_v, torch::tensor((float) scales_b[i][k])});
-//            }
 
-            target_values_v.emplace_back(targets[k].value);
-            target_rewards_v.emplace_back(targets[k].reward);
-
+//        for (int k = 0; k < targets.size(); k++) {
+            target_policies_cat += torch::tensor(targets[k].policy).view({1, ACTIONS});
+//        }
         }
+
+        target_policies_cat_all.emplace_back(target_policies_cat);
     }
 
+    torch::Tensor l;
+    for (int k = 0; k < 6; k++) {
+        torch::Tensor target_values = torch::tensor(target_values_v[k]).view({-1, 1}).to(ctx);
+        torch::Tensor target_rewards = torch::tensor(target_rewards_v[k]).view({-1, 1}).to(ctx);
 
-        torch::Tensor values = values_cat_all.tensor.view({-1, 1}).to(ctx);
-        torch::Tensor target_values = torch::tensor(target_values_v).view({-1, 1}).to(ctx);
-        torch::Tensor rewards = rewards_cat_all.tensor.view({-1, 1}).to(ctx);
-        torch::Tensor target_rewards = torch::tensor(target_rewards_v).view({-1, 1}).to(ctx);
-        torch::Tensor logits = logits_cat_all.tensor.to(ctx);
-        torch::Tensor target_policies = target_policies_cat_all.tensor.to(ctx);
-        torch::Tensor scale = scale_cat_all.tensor.view({-1, 1}).to(ctx);
-
-//        std::cout << values.sizes() << std::endl;
-//        std::cout << target_values.sizes() << std::endl;
-        torch::Tensor l = (((values - target_values).pow(2).mean(1)
-                            + (rewards - target_rewards).pow(2).mean(1)
-                            + cross_entropy_loss(logits, target_policies, step)) * scale).mean();
-//        std::cout << target_policies.sizes() << std::endl;
-//        torch::Tensor l = (cross_entropy_loss(logits, target_policies)).mean();
-
+        torch::Tensor l1 = ((predictions[k].tensor->value_tensor - target_values).pow(2).mean(1)
+             + (predictions[k].tensor->reward_tensor - target_rewards).pow(2).mean(1)
+             + cross_entropy_loss(predictions[k].tensor->policy_tensor.view({-1, ACTIONS}),
+                                  target_policies_cat_all[k].tensor.to(ctx).view({-1, ACTIONS}), step, k))
+                ;
+        if(k == 0) {
+            l = l1;
+        } else {
+            l += l1;
+        }
+    }
+    l = l.mean();
         if(step % 10 == 0)
             std::cout << "\t\t loss: " << l.item<float>() << std::endl;
 
@@ -2347,7 +2469,6 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
         opt.step();
 
 
-#endif
 
 }
 
@@ -2357,8 +2478,8 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
 
     std::vector<torch::Tensor> params = network->parameters();
 
-    torch::optim::SGD opt(params, torch::optim::SGDOptions(config.lr_init)
-    .momentum(config.momentum).weight_decay(config.weight_decay));
+    torch::optim::Adam opt(params, torch::optim::AdamOptions(config.lr_init)
+    /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
 //        std::cout << i << "\t";
