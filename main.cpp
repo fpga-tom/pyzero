@@ -489,7 +489,7 @@ struct Environment {
         while (f.good()) {
             getline(f, line);
             if(line.size() >= str.size()) {
-                for (size_t i = 0; i <= line.size() - str.size(); i++) {
+                for (size_t i = 0; i <= line.size() - str.size(); i+=2) {
                     int d_0_ = h_dist(str, line.substr(i), 0);
                     int d_1_ = h_dist(str, line.substr(i), 1);
 
@@ -608,9 +608,11 @@ struct Game {
         root_values.emplace_back(root->value());
     }
 
-    Image_t make_image(int state_index) {
+    Image_t make_image(int state_index=-2) {
         Image_t r;
-        state_index = state_index < 0 ? (int)environment.seq.size() + state_index: state_index;
+        if( state_index == -2) {
+            state_index = (int)environment.seq.size() - 1;
+        }
         int high = state_index + 1;
         int low = std::max(high - HISTORY, 0);
         std::copy(environment.seq.begin() + low, environment.seq.begin() + high , std::back_inserter(r));
@@ -815,9 +817,11 @@ struct ReplayBuffer {
             auto g = games[i];
             Image_t image = g->make_image(game_pos[i]);
             ActionList_t history;
-            std::copy(g->history.begin()+game_pos[i], g->history.begin()+std::min(game_pos[i]+num_unroll_steps, (int)g->history.size()) - 1,
+            int pos = game_pos[i];
+
+            std::copy(g->history.begin()+pos, g->history.begin()+std::min(pos+num_unroll_steps, (int)g->history.size()),
                     std::back_inserter(history));
-            std::vector<Target> target = g->make_target(game_pos[i], num_unroll_steps, td_steps, g->to_play());
+            std::vector<Target> target = g->make_target(pos, num_unroll_steps, td_steps, g->to_play());
             result.emplace_back(Batch{image, history, target});
         }
         return result;
@@ -2200,7 +2204,7 @@ std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i>
     int count = 0;
     while(!game->terminal() && game->history.size() < config.max_moves) {
         std::shared_ptr<Node> root(std::make_shared<Node>(0));
-        Image_t current_observation = game->make_image(-1);
+        Image_t current_observation = game->make_image();
         batch_in_s batch = batch_in_s::make_batch(current_observation);
         NetworkOutput no = network->initial_inference(batch).network_output();
         expand_node(root, game->to_play(), game->legal_actions(), no);
