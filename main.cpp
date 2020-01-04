@@ -244,7 +244,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 2)
+            if (num_moves < 4)
                 return 1.0;
             else
                 return 0.0;
@@ -255,7 +255,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            93,
+            93*2,
             128,
             max_moves,  //Always use Monte Carlo return.
             1,
@@ -268,7 +268,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
 }
 
 MuZeroConfig make_c_config() {
-    return make_board_config(ACTIONS, 6, 0.03, 0.001);
+    return make_board_config(ACTIONS, MAX_MOVES, 0.15, 0.001);
 }
 
 
@@ -447,16 +447,9 @@ struct Environment {
 
     int h_dist(const std::string& a, const std::string& b, int p) {
         int count=0;
-        for(int i=0; i<std::min(a.size(), b.size()); i++)
+        for(int i=0; i<std::min(a.size()/2, b.size()); i++)
         {
-            if( i % 2 == p)
-                count += a[i] == b[i];
-//            int partial = (~((a[i] & 0xFF) ^ (b[i] & 0xFF)))&0xFF;
-//            while(partial)
-//            {
-//                count += partial & 1;
-//                partial = partial >>1;
-//            }
+            count += a[i*2 + p] == b[i];
         }
         return count;
     }
@@ -484,17 +477,20 @@ struct Environment {
         int d_1 = 0;
         int d_0_c = 0;
         int d_1_c = 0;
-        if (seq.size() < 6) {
+        if (seq.size() < MAX_MOVES) {
             return 0;
         }
-//        std::cout << str << std::endl;
         while (f.good()) {
             getline(f, line);
-            if(line.size() >= str.size()) {
-                for (size_t i = 0; i <= line.size() - str.size(); i+=2) {
+            if(line.size() >= str.size()/2) {
+                for (size_t i = 0; i <= line.size() - str.size()/2; i++) {
                     int d_0_ = h_dist(str, line.substr(i), 0);
                     int d_1_ = h_dist(str, line.substr(i), 1);
 
+                    d_0 = std::max(d_0, d_0_);
+                    d_1 = std::max(d_1, d_1_);
+
+                    /*
                     int d = std::max(d_0, d_1);
                     int d_ = std::max(d_0_, d_1_);
 
@@ -528,13 +524,22 @@ struct Environment {
 
                         }
                     }
+                     */
                 }
             }
         }
 
-        std::cout << str << " " << d_0 << " " << d_1 << std::endl;
-        d_0 += d_0_c;
-        d_1 += d_1_c;
+        std::stringstream str1;
+        std::stringstream str2;
+
+        for(int i = 0 ;i < str.size()/2; i++) {
+            str1 << str[i*2];
+            str2 << str[i*2+1];
+        }
+
+        std::cout << str1.str() << " "  << str2.str() << " " << d_0 << " " << d_1 << std::endl;
+//        d_0 += d_0_c;
+//        d_1 += d_1_c;
         if(d_0 > d_1) {
             return -1;
         } else if(d_0 < d_1) {
@@ -606,7 +611,7 @@ struct Game {
         }
         return false;
          */
-        return history.size() == 6;
+        return history.size() == MAX_MOVES;
     }
 
     ActionList_t legal_actions() {
@@ -642,7 +647,7 @@ struct Game {
         int high = state_index + 1;
         int low = std::max(high - HISTORY, 0);
         std::copy(environment.seq.begin() + low, environment.seq.begin() + high , std::back_inserter(r));
-        assert(r.size() == high);
+        assert(r.size() == high - low);
         int pad = HISTORY - r.size();
         for(int i = 0;i < pad; i++) {
             r.emplace_back(ACTIONS);
@@ -1035,7 +1040,7 @@ template <class Block> struct ResNet_representation : torch::nn::Module {
 //              layer3(_make_layer(64, layers[2], 2)),
 //              layer4(_make_layer(64, layers[3], 2)),
               fc(64 * Block::expansion, num_classes),
-              embedding(torch::nn::Embedding(ACTIONS+1, ACTIONS + 1))
+              embedding(ACTIONS+1, ACTIONS + 1)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1180,7 +1185,7 @@ template <class Block> struct ResNet_dynamics : torch::nn::Module {
               bn3(16),
               fc3(192 * Block::expansion, 64),
               fc4(64, num_classes),
-              embedding(torch::nn::Embedding(ACTIONS+1, ACTIONS+1))
+              embedding(ACTIONS+1, ACTIONS+1)
     {
         register_module("conv1", conv1);
         register_module("bn1", bn1);
@@ -1814,6 +1819,9 @@ struct SingleInference : Inference_i {
         batch.out = {};
         batch.out.emplace_back(initial_queue_read);
         initial_queue_write->enqueue(batch);
+        if(batch.yield != nullptr) {
+            batch.yield->yield();
+        }
         return initial_queue_read->dequeue();
     }
 
@@ -1821,6 +1829,9 @@ struct SingleInference : Inference_i {
         batch.out = {};
         batch.out.emplace_back(recurent_queue_read);
         recurent_queue_write->enqueue(batch);
+        if(batch.yield != nullptr) {
+            batch.yield->yield();
+        }
         return recurent_queue_read->dequeue();
     }
 };
@@ -1880,16 +1891,31 @@ struct BatchInference : Inference_i {
                 }
         }
 #else
+        float integral = 0;
         while (run) {
             std::vector<batch_in_t> b = initial_queue_read->dequeue_all(std::chrono::milliseconds(100));
             if(b.empty())
                 continue;
             std::copy(b.begin(), b.end(), std::back_inserter(initial_batches));
 
+
+
             batch_in_t batch_in = merge_batch(initial_batches);
             batch_out_t batch_out = initial_inference(batch_in);
-            distill_batch(batch_in,batch_out);
+            distill_batch(batch_in, batch_out);
+
+            float error = batch_size*.9 - initial_batches.size();
+            float proportional = 1e-5*error;
+            integral += 1e-4*error;
+            float pid = integral + proportional;
+
+            int sleep_time = std::max((int)pid, 0);
+
             initial_batches.clear();
+
+//            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
+
+
         }
 #endif
     }
@@ -1911,6 +1937,7 @@ struct BatchInference : Inference_i {
             }
         }
 #else
+        float integral = 0;
         while (run) {
             std::vector<batch_in_t> b = recurrent_queue_read->dequeue_all(std::chrono::milliseconds(100));
             if(b.empty())
@@ -1921,7 +1948,17 @@ struct BatchInference : Inference_i {
             batch_in_t batch_in = merge_batch(recurrent_batches);
             batch_out_t batch_out = recurrent_inference(batch_in);
             distill_batch(batch_in, batch_out);
+
+            float error = batch_size*.9 - recurrent_batches.size();
+            float proportional = 1e-5*error;
+            integral += 1e-4*error;
+            float pid = integral + proportional;
+
+            int sleep_time = std::max((int)pid, 0);
+//            std::cout << recurrent_batches.size() << " " << pid << std::endl;
             recurrent_batches.clear();
+
+//            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
         }
 #endif
     }
@@ -2195,7 +2232,8 @@ Action select_action(MuZeroConfig& config, int num_moves, std::shared_ptr<Node>&
 
 }
 
-void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory action_history, std::shared_ptr<Network_i>& network) {
+void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory action_history,
+        std::shared_ptr<Network_i>& network, std::shared_ptr<Yield_i> yield) {
     MinMaxStats min_max_stats(config.known_bounds);
 
 
@@ -2214,7 +2252,7 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
 
         assert(search_path.size() - 2 >= 0);
         std::shared_ptr<Node> parent = search_path[search_path.size() - 2];
-        batch_in_s batch = batch_in_s::make_batch(parent->hidden_state, history.last_action());
+        batch_in_s batch = batch_in_s::make_batch(parent->hidden_state, history.last_action(), yield);
         batch_out_t batch_out = network->recurrent_inference(batch);
         NetworkOutput network_output = batch_out.network_output();
         expand_node(node, history.to_play(), history.action_space(), network_output);
@@ -2224,21 +2262,21 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
     }
 }
 
-std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i> network) {
+std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i> network, std::shared_ptr<Yield_i> yield) {
     std::shared_ptr<Game> game = config.new_game();
 
     int count = 0;
     while(!game->terminal() && game->history.size() < config.max_moves) {
         std::shared_ptr<Node> root(std::make_shared<Node>(0));
         Image_t current_observation = game->make_image();
-        batch_in_s batch = batch_in_s::make_batch(current_observation);
+        batch_in_s batch = batch_in_s::make_batch(current_observation, yield);
         NetworkOutput no = network->initial_inference(batch).network_output();
         expand_node(root, game->to_play(), game->legal_actions(), no);
         add_exploration_noise(config, root);
 
 //        std::cout << "run_mcts " << count << std::endl;
         count++;
-        run_mcts(config, root, game->action_history(), network);
+        run_mcts(config, root, game->action_history(), network, yield);
         Action action = select_action(config, game->history.size(), root, network);
         game->apply(action);
         game->store_search_statistics(root);
@@ -2247,13 +2285,15 @@ std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i>
     return game;
 }
 
-void run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage, ReplayBuffer replay_buffer, int tid) {
+bool run_selfplay(MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage, ReplayBuffer replay_buffer,
+        std::shared_ptr<Yield_i> yield) {
 
     for(int i = 0;i < config.num_selfplay; i++) {
         std::shared_ptr<Network_i> network = storage->latest_network(get_ctx());
-        std::shared_ptr<Game> game = play_game(config, network);
+        std::shared_ptr<Game> game = play_game(config, network, yield);
         replay_buffer.save_game(game);
     }
+    return true;
 }
 
 torch::Tensor cross_entropy_loss(torch::Tensor input, torch::Tensor target, int step, int k) {
@@ -2293,7 +2333,8 @@ struct CustomCat {
 
 
 
-void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& network, std::vector<Batch> batch, float weight_decay, torch::Device ctx, int step) {
+void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& network, std::vector<Batch> batch,
+        float weight_decay, int max_moves, torch::Device ctx, int step) {
 
     torch::Tensor values_v;
     std::vector<std::vector<float>> target_values_v;
@@ -2309,9 +2350,6 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     std::vector<std::vector<float>> scales_b(batch.size());
 
     DUMP_LOG(batch.size())
-//#pragma omp parallel num_threads(12)  default(none) shared(batch, network, network_output_vector, predictions, scales_b)
-//    {
-//#pragma omp for schedule(static)
     std::vector<Image_t> img;
     for (int i = 0; i < batch.size(); ++i) {
         Image_t image = batch[i].image;
@@ -2323,17 +2361,11 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     predictions.emplace_back(network_output.network_output());
 
     for (int i = 0; i < batch.size(); i++) {
-
-//                predictions[i].emplace_back(network_output.out[i]);
         scales_b[i].emplace_back(1);
     }
-//        }
-//    }
 
-//#pragma omp parallel num_threads(64) default(none) shared(batch, network, network_output_vector, predictions, scales_b, network_output)
-//#pragma omp for schedule(dynamic)
     torch::Tensor hidden_state;
-    for (int j = 0; j < 6; j++) {
+    for (int j = 0; j < max_moves; j++) {
 
         std::vector<Action> actions;
         for (int i = 0; i < batch.size(); i++) {
@@ -2441,7 +2473,7 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
     //        std::cout << target_policies.sizes() << std::endl;
     //        torch::Tensor l = (cross_entropy_loss(logits, target_policies)).mean();
 #endif
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < max_moves; k++) {
         std::vector<float> target_values_v_tmp;
         std::vector<float> target_rewards_v_tmp;
         for (int i = 0; i < batch.size(); i++) {
@@ -2449,11 +2481,9 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
             std::vector<Target> targets = batch[i].target;
 
 
-//        for (int k = 0; k < targets.size(); k++) {
             target_values_v_tmp.emplace_back(targets[k].value);
             target_rewards_v_tmp.emplace_back(targets[k].reward);
 
-//        }
         }
 
         target_values_v.emplace_back(target_values_v_tmp);
@@ -2462,24 +2492,20 @@ void update_weights(torch::optim::Optimizer& opt, std::shared_ptr<Network_i>& ne
 
     std::vector<CustomCat> target_policies_cat_all;
 
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < max_moves; k++) {
         CustomCat target_policies_cat;
         for (int i = 0; i < batch.size(); i++) {
 
             std::vector<Target> targets = batch[i].target;
 
-
-
-//        for (int k = 0; k < targets.size(); k++) {
             target_policies_cat += torch::tensor(targets[k].policy).view({1, ACTIONS});
-//        }
         }
 
         target_policies_cat_all.emplace_back(target_policies_cat);
     }
 
     torch::Tensor l;
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < max_moves; k++) {
         torch::Tensor target_values = torch::tensor(target_values_v[k]).view({-1, 1}).to(ctx);
         torch::Tensor target_rewards = torch::tensor(target_rewards_v[k]).view({-1, 1}).to(ctx);
 
@@ -2516,30 +2542,90 @@ void train_network(MuZeroConfig& config, std::shared_ptr<SharedStorage_i> storag
     /*.momentum(config.momentum)*/.weight_decay(config.weight_decay));
 
     for(int i = 0; i < config.training_steps; i++) {
-//        std::cout << i << "\t";
         std::cout << "*" << "\t";
         if(i != 0 && i % config.checkpoint_interval == 0) {
             storage->save_network(i, network);
         }
         std::vector<Batch> batch = replay_buffer.sample_batch(config.num_unroll_steps, config.td_steps);
-        update_weights(opt, network, batch, config.weight_decay, ctx, i);
+        update_weights(opt, network, batch, config.weight_decay, config.num_unroll_steps, ctx, i);
         network->inc_trainint_steps();
     }
     storage->save_network(config.training_steps, network);
 
 }
 
+void _run_selfplay(intptr_t p);
+
+struct GreenTask : Yield_i {
+    boost::context::fcontext_t *ctx, *main_ctx;
+    MuZeroConfig config;
+    std::shared_ptr<SharedStorage_i> storage;
+    ReplayBuffer replay_buffer;
+    int id;
+    bool done;
+
+    GreenTask(int id, boost::context::fcontext_t *main_ctx, MuZeroConfig config, std::shared_ptr<SharedStorage_i> storage,
+            ReplayBuffer &replay_buffer) : main_ctx(main_ctx), config(config), storage(storage),
+            replay_buffer(replay_buffer), id(id), done(false) {
+
+        boost::coroutines::stack_allocator alloc;
+        void *sp (alloc.allocate(alloc.default_stacksize()));
+        std::size_t size(alloc.default_stacksize());
+        ctx = boost::context::make_fcontext(sp , size, _run_selfplay);
+    }
+
+    void yield() override {
+        boost::context::jump_fcontext(ctx, main_ctx, 0);
+    }
+
+    void work() {
+        boost::context::jump_fcontext(main_ctx, ctx, reinterpret_cast<intptr_t>(this));
+    }
+};
+
+void _run_selfplay(intptr_t p) {
+    GreenTask *pia = reinterpret_cast<GreenTask *>(p);
+    std::shared_ptr<Yield_i> sp(pia);
+    while(true) {
+        if(!pia->done)
+            pia->done = run_selfplay(pia->config, pia->storage, pia->replay_buffer, sp);
+        pia->yield();
+    }
+
+}
+
 
 std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
     std::shared_ptr<BatchSharedStorage> b_storage = std::make_shared<BatchSharedStorage>(config);
-    int bs = config.train ? 128 : config.batch_size;//config.num_actors;
-    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : config.num_executors);
+    int bs = config.train ? 1 : config.batch_size;//config.num_actors;
+    std::shared_ptr<SingleSharedStorage> storage = std::make_shared<SingleSharedStorage>(b_storage, bs, get_ctx(), config.train ? 1 : 4);
     ReplayBuffer replay_buffer(config);
 
+
     std::vector<std::shared_ptr<std::thread>> threads;
-    for(int i = 0; i < config.num_actors; i++) {
-//        run_selfplay(config, storage, replay_buffer, i);
-        threads.emplace_back(std::make_shared<std::thread>(run_selfplay, config, storage, replay_buffer, i));
+
+    for(int j = 0; j < config.num_executors; j++) {
+
+        threads.emplace_back(std::make_shared<std::thread>([config, storage, &replay_buffer]() {
+            boost::context::fcontext_t main_ctx;
+
+            std::vector<std::shared_ptr<GreenTask>> tasks;
+            for (int i = 0; i < config.num_actors; i++) {
+//        threads.emplace_back(std::make_shared<std::thread>(run_selfplay, config, storage, replay_buffer));
+                tasks.emplace_back(std::make_shared<GreenTask>(i, &main_ctx, config, storage, replay_buffer));
+            }
+
+            bool all_done = false;
+            while (!all_done) {
+                all_done = true;
+                for (auto a : tasks) {
+                    if (!a->done) {
+                        a->work();
+                        all_done = false;
+                    }
+                }
+            }
+        }));
     }
 
 

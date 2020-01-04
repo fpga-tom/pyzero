@@ -87,6 +87,8 @@ modification follow.
 #include <boost/program_options.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/interprocess/sync/scoped_lock.hpp>
+#include <boost/context/all.hpp>
+#include <boost/coroutine/stack_allocator.hpp>
 #include "random.h"
 
 #ifdef DEBUG
@@ -99,6 +101,7 @@ const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
 const int ACTIONS = 31;
 const int HISTORY = 8;
 const int HIDDEN = 64;
+const int MAX_MOVES = 20;
 //const std::string PRINTABLE = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c";
 
 const std::string PRINTABLE = "abcdefghijklmnopqrstuvwxyz!,;. ";
@@ -128,6 +131,10 @@ struct NetworkOutputTensor {
                 hidden_tensor);
 
     }
+};
+
+struct Yield_i {
+    virtual void yield() = 0;
 };
 
 struct NetworkOutput {
@@ -237,11 +244,14 @@ typedef struct batch_in_s {
     std::vector<long> actions;
     std::vector<std::shared_ptr<batch_queue_out_t>> out;
 
-    static batch_in_s make_batch(HiddenState_t hidden_state, Action action, bool requires_grad=false) {
+    std::shared_ptr<Yield_i> yield;
+
+    static batch_in_s make_batch(HiddenState_t hidden_state, Action action, std::shared_ptr<Yield_i> yield, bool requires_grad=false) {
         batch_in_s ret;
         ret.batch = torch::tensor(hidden_state, torch::requires_grad(requires_grad));
         ret.actions = {};
         ret.actions.emplace_back(action.index);
+        ret.yield = yield;
         return ret;
     }
 
@@ -250,6 +260,7 @@ typedef struct batch_in_s {
         ret.batch = hidden_state.set_requires_grad(requires_grad).reshape({-1, HIDDEN});
         ret.actions = {};
         ret.actions.emplace_back(action.index);
+        ret.yield = nullptr;
         return ret;
     }
 
@@ -260,12 +271,14 @@ typedef struct batch_in_s {
         for(int i = 0;i < action.size(); i++) {
             ret.actions.emplace_back(action[i].index);
         }
+        ret.yield = nullptr;
         return ret;
     }
 
-    static batch_in_s make_batch(Image_t &t) {
+    static batch_in_s make_batch(Image_t &t, std::shared_ptr<Yield_i> yield) {
         batch_in_s ret;
         ret.batch = torch::tensor(t).reshape({-1,static_cast<long>(t.size())});
+        ret.yield = yield;
         return ret;
     }
 
@@ -276,6 +289,7 @@ typedef struct batch_in_s {
             torch::Tensor tensor = torch::tensor(t[i]).reshape({-1,static_cast<long>(t[i].size())});
             ret.batch = torch::cat({ret.batch, tensor});
         }
+        ret.yield = nullptr;
         return ret;
     }
 } batch_in_t;
@@ -302,5 +316,7 @@ struct SharedStorage_i {
     virtual std::shared_ptr<Network_i> latest_network(torch::Device ctx) = 0;
     virtual void save_network(int step, std::shared_ptr<Network_i>& network) = 0;
 };
+
+
 
 #endif //MUZERO_MAIN_H

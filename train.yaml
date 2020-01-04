@@ -3,9 +3,9 @@
     - gigabyte
   tasks:
     - name: execute sampling
-      shell: cd /home/tomas/CLionProjects/muzero/cmake-build-release && ulimit -n 4096 && ./muzero --workers {{workers}} --num_selfplay {{selfplay}} --batch {{batch}} --executors {{executors}} > /tmp/sampling.out
+      shell: cd /home/tomas/CLionProjects/muzero/cmake-build-release && ulimit -n 4096 && ulimit -u 4096 && ./muzero --workers {{workers}} --num_selfplay {{selfplay}} --batch {{batch}} --executors {{executors}} > /tmp/sampling.out
 
 - hosts: aorus
   tasks:
     - name: train
-      shell: cd /home/tomas/CLionProjects/muzero/cmake-build-release && ulimit -n 4096 && ./muzero --train true --lr 0.001 --window 65536 --batch 2048 --checkpoint 16 --training_steps 513 >> /tmp/training.out
+      shell: cd /home/tomas/CLionProjects/muzero/cmake-build-release && ulimit -n 4096 && ./muzero --train true --lr 0.001 --window 131072 --batch 2048 --checkpoint 16 --training_steps 513 >> /tmp/training.out
