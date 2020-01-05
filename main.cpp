@@ -255,7 +255,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
             action_space_size,
             max_moves, 1.0,
             dirichlet_alpha,
-            93*2,
+            93,
             128,
             max_moves,  //Always use Monte Carlo return.
             1,
@@ -302,6 +302,18 @@ struct Node {
             reward(0) {
         assert(!isnan(prior));
 
+    }
+
+    Node(const Node& other) {
+        visit_count = other.visit_count;
+        to_play = other.to_play;
+        prior = other.prior;
+        value_sum = other.value_sum;
+        for(int i = 0; i < other.children.size(); i++) {
+            children.emplace_back(std::make_shared<Node>(*other.children[i]));
+        }
+        hidden_state = {other.hidden_state};
+        reward = other.reward;
     }
 
     float value() {
@@ -628,11 +640,9 @@ struct Game {
         int sum_visits = std::accumulate(root->children.begin(), root->children.end(), 0,
                 [](int a,std::shared_ptr<struct Node>& b){ return a + b->visit_count;});
         std::vector<float> v;
-//        std::cout << "\t\t\t\t\t sum_visits: " << sum_visits << std::endl;
         for(int i = 0; i < ACTIONS; i++) {
             // TODO: check if all children nodes are expanded already
             float cv = (float) root->children[i]->visit_count / (float) sum_visits;
-//            std::cout << cv << std::endl;
             v.emplace_back(cv);
         }
         child_visits.emplace_back(v);
@@ -2265,18 +2275,32 @@ void run_mcts(MuZeroConfig& config, std::shared_ptr<Node>& root, ActionHistory a
 std::shared_ptr<Game> play_game(MuZeroConfig& config, std::shared_ptr<Network_i> network, std::shared_ptr<Yield_i> yield) {
     std::shared_ptr<Game> game = config.new_game();
 
-    int count = 0;
     while(!game->terminal() && game->history.size() < config.max_moves) {
         std::shared_ptr<Node> root(std::make_shared<Node>(0));
         Image_t current_observation = game->make_image();
         batch_in_s batch = batch_in_s::make_batch(current_observation, yield);
         NetworkOutput no = network->initial_inference(batch).network_output();
         expand_node(root, game->to_play(), game->legal_actions(), no);
-        add_exploration_noise(config, root);
 
-//        std::cout << "run_mcts " << count << std::endl;
-        count++;
-        run_mcts(config, root, game->action_history(), network, yield);
+        std::vector<std::shared_ptr<Node>> root_nodes;
+        for(int i = 0; i < config.num_executors; i++) {
+            root_nodes.emplace_back(std::make_shared<Node>(*root));
+        }
+
+#pragma omp parallel for
+        for(int i = 0; i < config.num_executors; i++) {
+            add_exploration_noise(config, root_nodes[i]);
+            run_mcts(config, root_nodes[i], game->action_history(), network, yield);
+        }
+
+        for(int i = 0; i < config.num_executors; i++) {
+            for(int j = 0; j < ACTIONS; j++) {
+                root->children[j]->visit_count += root_nodes[i]->children[j]->visit_count;
+            }
+            root->value_sum += root_nodes[i]->value_sum;
+            root->visit_count += root_nodes[i]->visit_count;
+        }
+
         Action action = select_action(config, game->history.size(), root, network);
         game->apply(action);
         game->store_search_statistics(root);
@@ -2604,6 +2628,10 @@ std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
 
     std::vector<std::shared_ptr<std::thread>> threads;
 
+    for (int i = 0; i < config.num_actors; i++) {
+        threads.emplace_back(std::make_shared<std::thread>(run_selfplay, config, storage, replay_buffer, nullptr));
+    }
+    /*
     for(int j = 0; j < config.num_executors; j++) {
 
         threads.emplace_back(std::make_shared<std::thread>([config, storage, &replay_buffer]() {
@@ -2627,6 +2655,7 @@ std::shared_ptr<Network_i> muzero(MuZeroConfig config) {
             }
         }));
     }
+     */
 
 
     if(config.train)

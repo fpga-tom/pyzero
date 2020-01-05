@@ -101,7 +101,7 @@ const float MAXIMUM_FLOAT_VALUE = std::numeric_limits<float>::max();
 const int ACTIONS = 31;
 const int HISTORY = 8;
 const int HIDDEN = 64;
-const int MAX_MOVES = 20;
+const int MAX_MOVES = 16;
 //const std::string PRINTABLE = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~ \t\n\r\x0b\x0c";
 
 const std::string PRINTABLE = "abcdefghijklmnopqrstuvwxyz!,;. ";

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for i in `seq 3`; do
+for i in `seq 50`; do
   echo 'EPOCH: ' $i
   ansible-playbook -i inventory.yaml train.yaml
 done;

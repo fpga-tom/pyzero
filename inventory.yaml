@@ -3,15 +3,15 @@
 
 [aorus:vars]
 workers=256
-batch=256
+batch=512
 selfplay=7
-executors=1
+executors=4
 
 [gigabyte]
 192.168.4.11 ansible_user=tomas
 
 [gigabyte:vars]
-workers=256
-batch=256
+workers=128
+batch=512
 selfplay=7
-executors=1
+executors=4
