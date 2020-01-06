@@ -244,7 +244,7 @@ MuZeroConfig make_board_config(int action_space_size, int max_moves,
     class VisitSoftmaxTemperatureFn1 : public VisitSoftmaxTemperatureFn {
     public:
         float operator()(int num_moves, int training_steps) override {
-            if (num_moves < 4)
+            if (num_moves < 8)
                 return 1.0;
             else
                 return 0.0;
@@ -487,8 +487,6 @@ struct Environment {
         assert(f.good());
         int d_0 = 0;
         int d_1 = 0;
-        int d_0_c = 0;
-        int d_1_c = 0;
         if (seq.size() < MAX_MOVES) {
             return 0;
         }
@@ -502,41 +500,6 @@ struct Environment {
                     d_0 = std::max(d_0, d_0_);
                     d_1 = std::max(d_1, d_1_);
 
-                    /*
-                    int d = std::max(d_0, d_1);
-                    int d_ = std::max(d_0_, d_1_);
-
-                    if(d_ > d) {
-                        int d_0_tmp = d_0;
-                        int d_1_tmp = d_1;
-
-                        d_0 = d_0_;
-                        d_1 = d_1_;
-
-                        d_1_c = std::min(d_0 - d_0_tmp, 0);
-                        d_0_c = std::min(d_1 - d_1_tmp, 0);
-
-                    } else if (d_ == d) {
-                        if (d == d_1_) {
-
-                            int d_0_tmp = d_0;
-
-                            d_0 = std::max(d_0, d_0_);
-
-                            d_1_c = d_0 - d_0_tmp;
-
-                        }
-                        if (d == d_0_) {
-
-                            int d_1_tmp = d_1;
-
-                            d_1 = std::max(d_1, d_1_);
-
-                            d_0_c = d_1 - d_1_tmp;
-
-                        }
-                    }
-                     */
                 }
             }
         }
@@ -550,8 +513,6 @@ struct Environment {
         }
 
         std::cout << str1.str() << " "  << str2.str() << " " << d_0 << " " << d_1 << std::endl;
-//        d_0 += d_0_c;
-//        d_1 += d_1_c;
         if(d_0 > d_1) {
             return -1;
         } else if(d_0 < d_1) {
